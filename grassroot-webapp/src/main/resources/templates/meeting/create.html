@@ -40,7 +40,7 @@
 
       <div class="row">
         <div class="col-md-8 col-md-offset-2 col-sm-6 col-sm-offset-3 col-xs-12">
-          <form id="meetingForm" th:object="${meeting}" th:action="@{/meeting/create}" method="post">
+          <form id="meetingForm" th:object="${meeting}" th:action="@{/meeting/create}" method="post" enctype="multipart/form-data">
             <div class="form-group">
               <label for="group" class="control-label">Who is meeting? Group:</label>
               <select th:unless="${groupSpecified}" name="selectedGroupUid" id="groupSelect" class="form-control input-lg">
@@ -58,8 +58,8 @@
 
             <div class="form-group">
               <label for="name" class="control-label">Meeting subject</label>
-              <input th:field="*{title}" type="text" class="form-control input-lg" id="name" placeholder="The topic of the meeting" maxlength="35" data-toggle="tooltip"
-              title="Meeting subject may not be longer than 35 characters. " />
+              <input th:field="*{title}" type="text" class="form-control input-lg" id="name" placeholder="The topic of the meeting" maxlength="40" data-toggle="tooltip"
+              title="Meeting subject may not be longer than 40 characters. " />
             </div>
             <div class="form-group">
               <label for="location" class="control-label input-lg">Meeting location</label>
@@ -74,6 +74,12 @@
                 <i class="fa fa-calendar" aria-hidden="true"></i>
                 </span>
               </div>
+            </div>
+
+            <div class="form-group">
+              <label for="name" class="control-label">Notes or longer description (optional)</label>
+              <textarea th:field="*{description}" class="form-control input-lg" rows="2" maxlength="250"
+                        placeholder="Add any additional information about the meeting (at present only Internet or Android users can view)"></textarea>
             </div>
 
             <div class="form-group">
@@ -95,6 +101,7 @@
             </div>
 
             <div class="collapse" id="advanced">
+
               <div class="form-group">
                 <label class="control-label">Reminder:</label>
                 <select th:field="*{reminderType}" class="form-control input-lg" id="reminderType">
@@ -113,6 +120,11 @@
                       <span th:text="${option[1]}" >No reminder</span>
                     </label>
                 </div>
+              </div>
+
+              <div class="form-group">
+                <label class="control-label">Image (optional):</label>
+                <input class="form-control input-lg" type="file" accept="image/*" th:field="*{meetingImage}" />
               </div>
 
               <!-- todo : restore check on groupSpecified later once found bug source -->
@@ -225,13 +237,13 @@
                 title: {
                     required: true,
                     minlength: 2,
-                    maxlength: 35
+                    maxlength: 40
                 },
                 location: {
                     required: true
                 }
             }, messages: {
-                title: 'Please enter a meeting subject (less than 35 characters)',
+                title: 'Please enter a meeting subject (less than 40 characters)',
                 location: 'Please enter where the meeting will be held'
             }
         });

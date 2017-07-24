@@ -23,7 +23,7 @@ import za.org.grassroot.core.repository.UserRepository;
 import za.org.grassroot.core.repository.UserRequestRepository;
 import za.org.grassroot.core.util.DateTimeUtil;
 import za.org.grassroot.core.util.PhoneNumberUtil;
-import za.org.grassroot.integration.sms.SmsSendingService;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 import za.org.grassroot.services.MessageAssemblingService;
 import za.org.grassroot.services.async.AsyncUserLogger;
 import za.org.grassroot.services.exception.InvalidTokenException;
@@ -74,7 +74,7 @@ public class UserManager implements UserManagementService, UserDetailsService {
     @Autowired
     private MessageAssemblingService messageAssemblingService;
     @Autowired
-    private SmsSendingService smsSendingService;
+    private MessagingServiceBroker messagingServiceBroker;
 
     @Value("${grassroot.todos.completion.threshold:20}") // defaults to 20 percent
     private double COMPLETION_PERCENTAGE_BOUNDARY;
@@ -244,12 +244,16 @@ public class UserManager implements UserManagementService, UserDetailsService {
 
     @Override
     @Transactional
-    public String regenerateUserVerifier(String phoneNumber) {
+    public String regenerateUserVerifier(String phoneNumber, boolean createUserIfNotExists) {
         User user = userRepository.findByPhoneNumber(phoneNumber);
         if (user == null) {
-            UserCreateRequest userCreateRequest = userCreateRequestRepository.findByPhoneNumber(phoneNumber);
-            if (userCreateRequest == null) {
-                throw new AccessDeniedException("Error! Trying to resend OTP for user before creating");
+            if (createUserIfNotExists) {
+                UserCreateRequest userCreateRequest = userCreateRequestRepository.findByPhoneNumber(phoneNumber);
+                if (userCreateRequest == null) {
+                    throw new AccessDeniedException("Error! Trying to resend OTP for user before creating");
+                }
+            } else {
+                throw new AccessDeniedException("Error! Trying to create an OTP for non-existent user");
             }
         }
         VerificationTokenCode newTokenCode = passwordTokenService.generateShortLivedOTP(phoneNumber);
@@ -361,7 +365,7 @@ public class UserManager implements UserManagementService, UserDetailsService {
     public void sendAndroidLinkSms(String userUid) {
         User user = userRepository.findOneByUid(userUid);
         String message = messageAssemblingService.createAndroidLinkSms(user);
-        smsSendingService.sendSMS(message, user.getPhoneNumber());
+        messagingServiceBroker.sendSMS(message, user.getPhoneNumber(), true);
 
     }
 
@@ -437,17 +441,6 @@ public class UserManager implements UserManagementService, UserDetailsService {
         }
 
         logsAndNotificationsBroker.storeBundle(bundle);
-    }
-
-    @Override
-    @Transactional
-    public Group fetchGroupUserMustRename(User user) {
-        Group lastCreatedGroup = groupRepository.findFirstByCreatedByUserAndActiveTrueOrderByIdDesc(user);
-        if (lastCreatedGroup != null && lastCreatedGroup.isActive() && !lastCreatedGroup.hasName()
-                && !asyncUserService.hasSkippedNamingGroup(user.getUid(), lastCreatedGroup.getUid()))
-            return lastCreatedGroup;
-        else
-            return null;
     }
 
     @Override

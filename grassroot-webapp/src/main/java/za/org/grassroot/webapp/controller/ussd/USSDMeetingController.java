@@ -1,7 +1,6 @@
 package za.org.grassroot.webapp.controller.ussd;
 
 import com.google.common.collect.Sets;
-import org.h2.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 import za.org.grassroot.core.domain.*;
+import za.org.grassroot.core.domain.EventLog;
 import za.org.grassroot.core.dto.MembershipInfo;
 import za.org.grassroot.core.dto.ResponseTotalsDTO;
 import za.org.grassroot.core.enums.EventLogType;
@@ -468,7 +468,7 @@ public class USSDMeetingController extends USSDController {
             // since getting USSD location is necessarily async, pass null location now, but update through user manager
             eventBroker.updateMeetingPublicStatus(user.getUid(), mtgUid, true, null, UserInterfaceType.USSD);
             if (useLocation != null && useLocation) {
-                geoLocationBroker.logUserUssdPermission(user.getUid(), mtgUid, JpaEntityType.MEETING);
+                geoLocationBroker.logUserUssdPermission(user.getUid(), mtgUid, JpaEntityType.MEETING, false);
             }
             USSDMenu menu = new USSDMenu(getMessage(thisSection, "public", promptKey + ".done", user));
             menu.addMenuOptions(optionsHomeExit(user, false));
@@ -770,7 +770,6 @@ public class USSDMeetingController extends USSDController {
 
     /*
     A couple of helper methods that are quite specific to flow & structure of this controller
-    todo: consider abstracting & moving to USSDUrlUtils
      */
 
     private String composeBackUri(String entityUid, String backMenu) {

@@ -3,15 +3,14 @@ package za.org.grassroot.webapp.controller.ussd;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.InjectMocks;
+import org.mockito.Mock;
 import org.springframework.test.annotation.Rollback;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import za.org.grassroot.core.domain.Group;
-import za.org.grassroot.core.domain.Meeting;
-import za.org.grassroot.core.domain.User;
-import za.org.grassroot.core.domain.Vote;
+import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.enums.EventRSVPResponse;
 import za.org.grassroot.core.enums.EventType;
+import za.org.grassroot.services.task.VoteBroker;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -45,19 +44,26 @@ public class USSDHomeControllerTest extends USSDAbstractUnitTest {
 
     private List<User> languageUsers;
 
+    @Mock
+    private VoteBroker voteBrokerMock;
+
     @InjectMocks
     private USSDHomeController ussdHomeController;
+
+    @InjectMocks
+    private USSDVoteController voteController;
 
     @Before
     public void setUp() {
 
-        mockMvc = MockMvcBuilders.standaloneSetup(ussdHomeController)
+        mockMvc = MockMvcBuilders.standaloneSetup(ussdHomeController, voteController)
                 .setHandlerExceptionResolvers(exceptionResolver())
                 .setValidator(validator())
                 .setViewResolvers(viewResolver())
                 .build();
 
         wireUpMessageSourceAndGroupUtil(ussdHomeController);
+        wireUpMessageSourceAndGroupUtil(voteController);
         // todo : extend this parrent into method above, to remove public setters
         ReflectionTestUtils.setField(ussdHomeController, "safetyCode", "911");
         ReflectionTestUtils.setField(ussdHomeController, "livewireSuffix", "411");
@@ -156,10 +162,7 @@ public class USSDHomeControllerTest extends USSDAbstractUnitTest {
             mockMvc.perform(get(openingMenu).param(phoneParameter, user.getPhoneNumber()).param("request", "*134*1994*111#")).
                     andExpect(status().isOk());
         }
-
     }
-
-
 
     @Test
     public void voteRequestScreenShouldWorkInAllLanguages() throws Exception {
@@ -167,8 +170,6 @@ public class USSDHomeControllerTest extends USSDAbstractUnitTest {
         testUser.setDisplayName(testUserName);
         testUser.setLanguageCode("en");
         Group testGroup = new Group(testGroupName, testUser);
-
-//        Event vote = new Event(testUser, EventType.VOTE, true);
         Vote vote = new Vote("are unit tests working?", Instant.now().plus(1, ChronoUnit.HOURS), testUser, testGroup);
 
         List<User> votingUsers = new ArrayList<>(languageUsers);
@@ -191,22 +192,20 @@ public class USSDHomeControllerTest extends USSDAbstractUnitTest {
 
             // note: the fact that message source accessor is not wired up may mean this is not actually testing
             mockMvc.perform(get("/ussd/start").param(phoneParameter, user.getPhoneNumber()));
-            mockMvc.perform(get("/ussd/vote").param(phoneParameter, user.getPhoneNumber()).
-                    param("entityUid", "" + vote.getUid()).
-                    param("response", "yes")).andExpect(status().isOk());
+            mockMvc.perform(get("/ussd/vote/record")
+                    .param(phoneParameter, user.getPhoneNumber())
+                    .param("voteUid", "" + vote.getUid())
+                    .param("response", "yes")).andExpect(status().isOk());
 
-            verify(eventLogBrokerMock, times(1)).rsvpForEvent(vote.getUid(), user.getUid(),
-                                                                         EventRSVPResponse.YES);
+            verify(voteBrokerMock, times(1)).recordUserVote(user.getUid(), vote.getUid(), "yes");
         }
     }
 
     @Test
     public void meetingRsvpShouldWorkInAllLanguages() throws Exception {
-
         resetTestUser();
         Group testGroup = new Group(testGroupName, testUser);
-
-        Meeting meeting = new Meeting("Meeting about testing", Instant.now(), testUser, testGroup, "someLocation");
+        Meeting meeting = new MeetingBuilder().setName("Meeting about testing").setStartDateTime(Instant.now()).setUser(testUser).setParent(testGroup).setEventLocation("someLocation").createMeeting();
 
         List<User> groupMembers = new ArrayList<>(languageUsers);
         groupMembers.add(testUser);
@@ -224,43 +223,50 @@ public class USSDHomeControllerTest extends USSDAbstractUnitTest {
             mockMvc.perform(get(openingMenu).param(phoneParameter, user.getPhoneNumber())).andExpect(status().isOk());
             verify(eventBrokerMock, times(1)).getOutstandingResponseForUser(user, EventType.MEETING);
 
-            mockMvc.perform(get("/ussd/rsvp").param(phoneParameter, user.getPhoneNumber())
-                                    .param("entityUid", "" + meeting.getUid())
-                                    .param("confirmed", "yes")).andExpect(status().isOk());
+            mockMvc.perform(get("/ussd/rsvp")
+                    .param(phoneParameter, user.getPhoneNumber())
+                    .param("entityUid", "" + meeting.getUid())
+                    .param("confirmed", "yes")).andExpect(status().isOk());
 
             verify(eventLogBrokerMock, times(1)).rsvpForEvent(meeting.getUid(), user.getUid(), EventRSVPResponse.YES);
-
         }
-
     }
 
-    /*
-    Make sure groupRename works properly
-     */
     @Test
-    public void groupRenameShouldWork() throws Exception {
+    public void shouldAssembleLiveWire() throws Exception {
+             Group group = new Group(testGroupName, testUser);
+             Meeting meeting = new MeetingBuilder().setName("").setStartDateTime(Instant.now().plus(1, ChronoUnit.HOURS)).setUser(testUser).setParent(group).setEventLocation("").createMeeting();
 
-        resetTestUser();
-        testUser.setHasInitiatedSession(true);
-        Group testGroup = new Group("", testUser);
+             List<Meeting> newMeeting  = Arrays.asList(meeting);
 
-        when(userManagementServiceMock.loadOrCreateUser(phoneForTests)).thenReturn(testUser);
-        when(userManagementServiceMock.findByInputNumber(phoneForTests)).thenReturn(testUser);
-        when(userManagementServiceMock.fetchGroupUserMustRename(testUser)).thenReturn(testGroup);
+             when(userManagementServiceMock.loadOrCreateUser(phoneForTests)).thenReturn(testUser);
+             when(liveWireBrokerMock.countGroupsForInstantAlert(testUser.getUid())).
+                thenReturn(0L);
 
-        // todo: work out how to verify that it actually returned the prompt to rename the testGroup
-        mockMvc.perform(get(openingMenu).param(phoneParameter, testUser.getPhoneNumber())).
+              mockMvc.perform(get(openingMenu).param(phoneParameter, phoneForTests)
+                     .param("request", "*134*1994*411#")).
                 andExpect(status().isOk());
 
-        mockMvc.perform(get("/ussd/group-start").
-                param(phoneParameter, phoneForTests).
-                param("groupUid", "" + testGroup.getUid()).
-                param("request", testGroupName)).andExpect(status().isOk());
+              verify(userManagementServiceMock,times(1)).
+                loadOrCreateUser(phoneForTests);
+              verify(liveWireBrokerMock,times(1)).
+                      meetingsForAlert(testUser.getUid());
+              verify(liveWireBrokerMock, times(1))
+                .countGroupsForInstantAlert(testUser.getUid());
 
-        verify(userManagementServiceMock, times(1)).loadOrCreateUser(phoneForTests);
-        verify(userManagementServiceMock, times(1)).findByInputNumber(phoneForTests);
-        verify(groupBrokerMock, times(1)).updateName(testUser.getUid(), testGroup.getUid(), testGroupName);
-        verify(userManagementServiceMock, times(2)).fetchGroupUserMustRename(testUser);
+              when(liveWireBrokerMock.countGroupsForInstantAlert(testUser.getUid()))
+                      .thenReturn(2L);
+
+               mockMvc.perform(get(openingMenu).param(phoneParameter, phoneForTests)
+                .param("request", "*134*1994*411#")).
+                       andExpect(status().isOk());
+
+              when(liveWireBrokerMock.meetingsForAlert(testUser.getUid())).
+                      thenReturn(newMeeting);
+              mockMvc.perform(get(openingMenu).param(phoneParameter, phoneForTests)
+                .param("request", "*134*1994*411#").
+                              param("page","1")).
+                andExpect(status().isOk());
     }
 
     /*

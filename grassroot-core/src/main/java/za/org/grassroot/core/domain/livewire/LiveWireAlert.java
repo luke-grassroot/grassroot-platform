@@ -1,16 +1,23 @@
 package za.org.grassroot.core.domain.livewire;
 
+import org.hibernate.annotations.Type;
 import org.springframework.util.StringUtils;
 import za.org.grassroot.core.domain.Group;
 import za.org.grassroot.core.domain.Meeting;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.geo.GeoLocation;
+import za.org.grassroot.core.enums.LiveWireAlertDestType;
 import za.org.grassroot.core.enums.LiveWireAlertType;
 import za.org.grassroot.core.enums.LocationSource;
+import za.org.grassroot.core.util.PhoneNumberUtil;
+import za.org.grassroot.core.util.StringArrayUtil;
 import za.org.grassroot.core.util.UIDGenerator;
 
 import javax.persistence.*;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -68,8 +75,38 @@ public class LiveWireAlert {
     private Instant sendTime;
 
     @Basic
+    @Column(name = "complete")
+    private boolean complete;
+
+    @Basic
+    @Column(name = "reviewed")
+    private boolean reviewed;
+
+    @ManyToOne
+    @JoinColumn(name = "reviewed_by_user_id")
+    private User reviewedByUser;
+
+    @Basic
     @Column(name = "sent")
     private boolean sent;
+
+    @Column(name = "tags")
+    @Type(type = "za.org.grassroot.core.util.StringArrayUserType")
+    private String[] tags;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "destination_type", length = 50)
+    private LiveWireAlertDestType destinationType;
+
+    // this is the private list of the user, if they have one
+    @ManyToOne
+    @JoinColumn(name = "subscriber_id")
+    private DataSubscriber targetSubscriber;
+
+    // these are the public lists selected by reviewer
+    @Column(name = "public_list_uids")
+    @Type(type = "za.org.grassroot.core.util.StringArrayUserType")
+    private String[] publicLists;
 
     @Embedded
     @AttributeOverrides({
@@ -82,6 +119,9 @@ public class LiveWireAlert {
     @Column(name = "location_source", length = 50, nullable = true)
     private LocationSource locationSource;
 
+    @Version
+    private Integer version;
+
     public static class Builder {
         private User creatingUser;
         private LiveWireAlertType type;
@@ -91,6 +131,8 @@ public class LiveWireAlert {
         private Group group;
         private String description;
         private Instant sendTime;
+        private boolean complete;
+        private LiveWireAlertDestType destType;
 
         public Builder creatingUser(User creatingUser) {
             this.creatingUser = creatingUser;
@@ -132,10 +174,21 @@ public class LiveWireAlert {
             return this;
         }
 
+        public Builder complete(boolean complete) {
+            this.complete = complete;
+            return this;
+        }
+
+        public Builder destType(LiveWireAlertDestType destType) {
+            this.destType = destType;
+            return this;
+        }
+
         public LiveWireAlert build() {
             LiveWireAlert alert = new LiveWireAlert(
                     Objects.requireNonNull(creatingUser),
                     Objects.requireNonNull(type),
+                    Objects.requireNonNull(destType),
                     meeting, group, description);
 
             if (sendTime != null) {
@@ -147,6 +200,8 @@ public class LiveWireAlert {
                 alert.setContactName(contactName);
             }
 
+            alert.setComplete(complete);
+
             return alert;
         }
     }
@@ -155,7 +210,8 @@ public class LiveWireAlert {
         // for JPA
     }
 
-    private LiveWireAlert(User creatingUser, LiveWireAlertType type, Meeting meeting, Group group, String description) {
+    private LiveWireAlert(User creatingUser, LiveWireAlertType type, LiveWireAlertDestType destType,
+                          Meeting meeting, Group group, String description) {
         this.uid = UIDGenerator.generateId();
         this.creationTime = Instant.now();
         this.creatingUser = creatingUser;
@@ -163,7 +219,11 @@ public class LiveWireAlert {
         this.meeting = meeting;
         this.group = group;
         this.description = description;
+        this.complete = false;
         this.sent = false;
+        this.tags = new String[0];
+        this.publicLists = new String[0];
+        this.destinationType = destType;
     }
 
     public Long getId() {
@@ -188,6 +248,10 @@ public class LiveWireAlert {
 
     public User getContactUser() {
         return contactUser;
+    }
+
+    public String getContactNumberFormatted() {
+        return PhoneNumberUtil.invertPhoneNumber(contactUser.getPhoneNumber());
     }
 
     public String getContactName() {
@@ -242,6 +306,57 @@ public class LiveWireAlert {
         this.description = description;
     }
 
+    public boolean isComplete() {
+        return complete;
+    }
+
+    public void setComplete(boolean complete) {
+        this.complete = complete;
+    }
+
+    public boolean isReviewed() {
+        return reviewed;
+    }
+
+    public void setReviewed(boolean reviewed) {
+        this.reviewed = reviewed;
+    }
+
+    public boolean isInstant() {
+        return LiveWireAlertType.INSTANT.equals(type);
+    }
+
+    public User getReviewedByUser() {
+        return reviewedByUser;
+    }
+
+    public void setReviewedByUser(User reviewedByUser) {
+        this.reviewedByUser = reviewedByUser;
+    }
+
+    public String[] getTags() {
+        return tags;
+    }
+
+    public List<String> getTagList() {
+        return tags == null ? new ArrayList<>() : new ArrayList<>(Arrays.asList(tags));
+    }
+
+    public void setTags(String[] tags) {
+        this.tags = tags;
+    }
+
+    public void addTags(List<String> tagsToAdd) {
+        List<String> currentTags = new ArrayList<>(StringArrayUtil.arrayToList(tags));
+        currentTags.addAll(tagsToAdd);
+        tags = StringArrayUtil.listToArrayRemoveDuplicates(currentTags);
+    }
+
+    public void reviseTags(List<String> tags) {
+        Objects.requireNonNull(tags);
+        this.tags = StringArrayUtil.listToArrayRemoveDuplicates(tags);
+    }
+
     public void setSendTime(Instant sendTime) {
         this.sendTime = sendTime;
     }
@@ -264,6 +379,42 @@ public class LiveWireAlert {
 
     public void setLocationSource(LocationSource locationSource) {
         this.locationSource = locationSource;
+    }
+
+    public Integer getVersion() {
+        return version;
+    }
+
+    public LiveWireAlertDestType getDestinationType() {
+        return destinationType;
+    }
+
+    public void setDestinationType(LiveWireAlertDestType destinationType) {
+        this.destinationType = destinationType;
+    }
+
+    public DataSubscriber getTargetSubscriber() {
+        return targetSubscriber;
+    }
+
+    public void setTargetSubscriber(DataSubscriber targetSubscriber) {
+        this.targetSubscriber = targetSubscriber;
+    }
+
+    public String[] getPublicLists() {
+        return publicLists;
+    }
+
+    public List<String> getPublicListUids() {
+        return StringArrayUtil.arrayToList(publicLists);
+    }
+
+    public void setPublicLists(String[] publicLists) {
+        this.publicLists = publicLists;
+    }
+
+    public void setPublicListUids(List<String> uids) {
+        this.publicLists = StringArrayUtil.listToArray(uids);
     }
 
     @Override

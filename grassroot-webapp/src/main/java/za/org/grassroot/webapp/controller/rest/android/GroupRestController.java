@@ -2,6 +2,7 @@ package za.org.grassroot.webapp.controller.rest.android;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
+import liquibase.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,11 +17,12 @@ import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.dto.MembershipInfo;
 import za.org.grassroot.core.enums.GroupDefaultImage;
 import za.org.grassroot.core.util.InvalidPhoneNumberException;
-import za.org.grassroot.integration.GroupChatService;
 import za.org.grassroot.integration.exception.GroupChatSettingNotFoundException;
-import za.org.grassroot.integration.xmpp.GcmService;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 import za.org.grassroot.services.exception.GroupSizeLimitExceededException;
+import za.org.grassroot.services.group.GroupChatBroker;
 import za.org.grassroot.services.group.GroupPermissionTemplate;
+import za.org.grassroot.services.user.GcmRegistrationBroker;
 import za.org.grassroot.webapp.enums.RestMessage;
 import za.org.grassroot.webapp.enums.RestStatus;
 import za.org.grassroot.webapp.model.GroupChatSettingsDTO;
@@ -43,8 +45,9 @@ public class GroupRestController extends GroupAbstractRestController {
 
     private static final Logger log = LoggerFactory.getLogger(GroupRestController.class);
 
-    private GroupChatService groupChatService;
-    private GcmService gcmService;
+    private GroupChatBroker groupChatService;
+    private MessagingServiceBroker messagingServiceBroker;
+    private GcmRegistrationBroker gcmRegistrationBroker;
 
     private final MessageSourceAccessor messageSourceAccessor;
 
@@ -62,12 +65,17 @@ public class GroupRestController extends GroupAbstractRestController {
     }
 
     @Autowired(required = false)
-    public void setGcmService(GcmService gcmService) {
-        this.gcmService = gcmService;
+    public void setGcmRegistrationBroker(GcmRegistrationBroker gcmRegistrationBroker) {
+        this.gcmRegistrationBroker = gcmRegistrationBroker;
     }
 
     @Autowired(required = false)
-    public void setGroupChatService(GroupChatService groupChatService) {
+    public void setMessagingServiceBroker(MessagingServiceBroker messagingServiceBroker) {
+        this.messagingServiceBroker = messagingServiceBroker;
+    }
+
+    @Autowired(required = false)
+    public void setGroupChatService(GroupChatBroker groupChatService) {
         this.groupChatService = groupChatService;
     }
 
@@ -344,6 +352,43 @@ public class GroupRestController extends GroupAbstractRestController {
         return response;
     }
 
+    @RequestMapping(value = "/edit/language/{phoneNumber}/{code}", method = RequestMethod.POST)
+    public ResponseEntity<ResponseWrapper> changeGroupLanguage(@PathVariable String phoneNumber, @RequestParam String groupUid,
+                                                               @RequestParam String language) {
+        User user = userManagementService.findByInputNumber(phoneNumber);
+        try {
+            groupBroker.updateGroupDefaultLanguage(user.getUid(), groupUid, language, false);
+            return RestUtil.messageOkayResponse(RestMessage.GROUP_LANGUAGE_CHANGED);
+        } catch (AccessDeniedException e) {
+            return RestUtil.accessDeniedResponse();
+        }
+    }
+
+    @RequestMapping(value = "/alias/change/{phoneNumber}/{code}", method = RequestMethod.POST)
+    public ResponseEntity<ResponseWrapper> changeMemberAlias(@PathVariable String phoneNumber,
+                                                             @RequestParam String groupUid,
+                                                             @RequestParam String alias) {
+        User user = userManagementService.findByInputNumber(phoneNumber);
+        if (!StringUtils.isEmpty(alias)) {
+            groupBroker.updateMemberAlias(user.getUid(), groupUid, alias);
+        }
+        return RestUtil.messageOkayResponse(RestMessage.MEMBER_ALIAS_CHANGED);
+    }
+
+    @RequestMapping(value = "/alias/check/{phoneNumber}/{code}", method = RequestMethod.GET)
+    public ResponseEntity<ResponseWrapper> queryMemberAlias(@PathVariable String phoneNumber,
+                                                            @PathVariable String groupUid) {
+        User user = userManagementService.findByInputNumber(phoneNumber);
+        Group group = groupBroker.load(groupUid);
+        return RestUtil.okayResponseWithData(RestMessage.MEMBER_ALIAS_RETURNED,
+                group.getMembership(user).getDisplayName());
+    }
+
+
+    /*
+    Below are legacy as Group chat is removed, but retaining for old clients
+     */
+
     @RequestMapping(value = "messenger/update/{phoneNumber}/{code}/{groupUid}", method = RequestMethod.POST)
     public ResponseEntity<ResponseWrapper> updateMemberGroupChatSetting(@PathVariable String phoneNumber,
                                                                         @PathVariable String code,
@@ -358,27 +403,17 @@ public class GroupRestController extends GroupAbstractRestController {
             Group group = groupBroker.load(groupUid);
             permissionBroker.isGroupPermissionAvailable(user, group, Permission.GROUP_PERMISSION_MUTE_MEMBER);
         }
-        groupChatService.updateActivityStatus(userSettingTobeUpdated, groupUid, active, userInitiated);
-        if (userInitiated && gcmService.hasGcmKey(user)) {
-            String registrationId = gcmService.getGcmKey(user);
-            if (active) {
-                gcmService.subscribeToTopic(registrationId, groupUid);
-            } else {
-                gcmService.unsubscribeFromTopic(registrationId, groupUid);
-            }
+        messagingServiceBroker.updateActivityStatus(userSettingTobeUpdated, groupUid, active, userInitiated);
+        if (userInitiated && gcmRegistrationBroker.hasGcmKey(user)) {
+            gcmRegistrationBroker.changeTopicSubscription(user.getUid(), groupUid, active);
         }
         return RestUtil.messageOkayResponse((!active) ? RestMessage.CHAT_DEACTIVATED : RestMessage.CHAT_ACTIVATED);
-
     }
 
     @RequestMapping(value = "messenger/ping/{phoneNumber}/{code}/{groupUid}", method = RequestMethod.GET)
     public ResponseEntity<ResponseWrapper> ping(@PathVariable String phoneNumber,
                                                 @PathVariable String code,
                                                 @PathVariable("groupUid") String groupUid) throws GroupChatSettingNotFoundException {
-
-        User user = userManagementService.findByInputNumber(phoneNumber);
-        Group group = groupBroker.load(groupUid);
-//        gcmService.pingUsersForGroupChat(group);
 
         return RestUtil.messageOkayResponse(RestMessage.PING);
     }
@@ -398,16 +433,10 @@ public class GroupRestController extends GroupAbstractRestController {
 
     @RequestMapping(value = "messenger/mark_read/{phoneNumber}/{code}/{groupUid}", method = RequestMethod.POST)
     public ResponseEntity<ResponseWrapper> marksAsRead(@PathVariable String phoneNumber, @PathVariable String code, @PathVariable String groupUid, @RequestParam Set<String> messageUids) {
-        User user = userManagementService.findByInputNumber(phoneNumber);
         Group group = groupBroker.load(groupUid);
-        if (groupChatService.isCanSend(user.getUid(), groupUid)) {
-            groupChatService.markMessagesAsRead(groupUid, group.getGroupName(), messageUids);
-        }
+        messagingServiceBroker.markMessagesAsRead(groupUid, messageUids);
         return RestUtil.messageOkayResponse(RestMessage.CHATS_MARKED_AS_READ);
     }
-
-
-
 
     private Group checkForDuplicateGroup(final String creatingUserUid, final String groupName) {
         Objects.requireNonNull(creatingUserUid);

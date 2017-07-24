@@ -1,5 +1,6 @@
 package za.org.grassroot.webapp.controller.ussd;
 
+import org.h2.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -168,15 +169,13 @@ public class USSDGroupController extends USSDController {
                         GroupPermissionTemplate.DEFAULT_GROUP, null, null, true);
             }
 
-            String joiningCode = "*134*1994*" + createdGroup.getGroupTokenCode() + "#";
             cacheManager.putUssdMenuForUser(inputNumber, saveGroupMenuWithInput(createGroupMenu + doSuffix, createdGroup.getUid(), groupName, false));
 
-            // todo: restore and finish these
-            // if (!locationRequestEnabled) {
-                menu = postCreateOptionsNoLocation(createdGroup.getUid(), groupName, joiningCode, user);
-            /*} else {
-                menu = postCreateOptionsWithLocation(createdGroup.getUid(), joiningCode, user);
-            }*/
+            if (!locationRequestEnabled) {
+                menu = postCreateOptionsNoLocation(createdGroup.getUid(), groupName, createdGroup.getGroupTokenCode(), user);
+            } else {
+                menu = postCreateOptionsWithLocation(createdGroup.getUid(), createdGroup.getGroupTokenCode(), user);
+            }
         }
         return menuBuilder(menu);
     }
@@ -207,13 +206,24 @@ public class USSDGroupController extends USSDController {
     @RequestMapping(value = groupPath + "public")
     public Request setGroupPublic(@RequestParam(phoneNumber) String inputNumber, @RequestParam(groupUidParam) String groupUid,
                                   @RequestParam boolean useLocation) throws  URISyntaxException {
-        return null;
+        User user = userManager.findByInputNumber(inputNumber);
+        Group group = groupBroker.load(groupUid);
+        groupBroker.updateDiscoverable(user.getUid(), groupUid, true, inputNumber);
+        if (useLocation) {
+            geoLocationBroker.logUserUssdPermission(user.getUid(), groupUid, JpaEntityType.GROUP, false);
+        }
+        return menuBuilder(postCreateOptionsNoLocation(groupUid, group.getName(),
+                group.getGroupTokenCode(), user));
     }
 
     @RequestMapping(value = groupPath + "private")
     public Request setGroupPrivate(@RequestParam(phoneNumber) String inputNumber, @RequestParam(groupUidParam) String groupUid)
         throws URISyntaxException {
-        return null;
+        User user = userManager.findByInputNumber(inputNumber);
+        Group group = groupBroker.load(groupUid);
+        groupBroker.updateDiscoverable(user.getUid(), groupUid, false, null);
+        return menuBuilder(postCreateOptionsNoLocation(groupUid, group.getName(),
+                group.getGroupTokenCode(), user));
     }
 
     @RequestMapping(value = groupPath + closeGroupToken)
@@ -565,6 +575,39 @@ public class USSDGroupController extends USSDController {
         groupBroker.unsubscribeMember(sessionUser.getUid(), groupUid);
         String returnMessage = getMessage(thisSection, unsubscribePrompt + doSuffix, promptKey, sessionUser);
         return menuBuilder(new USSDMenu(returnMessage, optionsHomeExit(sessionUser, false)));
+    }
+
+    /*
+    SETTING ALIAS FOR GROUP
+     */
+    @RequestMapping(value = groupPath + "alias")
+    @ResponseBody
+    public Request promptForAlias(@RequestParam(value = phoneNumber) String msisdn, @RequestParam String groupUid) throws URISyntaxException {
+        User user = userManager.findByInputNumber(msisdn);
+        Group group = groupBroker.load(groupUid);
+        Membership membership = group.getMembership(user);
+        String prompt = StringUtils.isNullOrEmpty(membership.getAlias()) ?
+                getMessage(thisSection, "alias", promptKey, user) :
+                getMessage(thisSection, "alias", promptKey + ".existing", membership.getAlias(), user);
+        return menuBuilder(new USSDMenu(prompt, groupMenuWithId("alias-do", groupUid)));
+    }
+
+    @RequestMapping(value = groupPath + "alias-do")
+    @ResponseBody
+    public Request changeAlias(@RequestParam(value = phoneNumber) String msisdn,
+                               @RequestParam String groupUid,
+                               @RequestParam(value = userInputParam) String input) throws URISyntaxException {
+        User user = userManager.findByInputNumber(msisdn);
+        if (!StringUtils.isNullOrEmpty(input) && !"0".equals(input) && StringUtils.isNumber(input)) {
+            String prompt = getMessage(thisSection, "alias", promptKey + ".error", user);
+            return menuBuilder(new USSDMenu(prompt, groupMenuWithId("alias-do", groupUid)));
+        } else {
+            boolean resetName = StringUtils.isNullOrEmpty(input) || "0".equals(input);
+            groupBroker.updateMemberAlias(user.getUid(), groupUid, resetName ? null : input);
+            String renamed = resetName ? user.getDisplayName() : input;
+            String prompt = getMessage(thisSection, "alias", promptKey + ".done", renamed, user);
+            return menuBuilder(new USSDMenu(prompt, optionsHomeExit(user, true)));
+        }
     }
 
     /**

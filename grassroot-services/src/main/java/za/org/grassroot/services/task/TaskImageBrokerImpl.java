@@ -1,6 +1,9 @@
 package za.org.grassroot.services.task;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -9,7 +12,10 @@ import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.domain.geo.GeoLocation;
 import za.org.grassroot.core.enums.*;
 import za.org.grassroot.core.repository.*;
+import za.org.grassroot.core.specifications.EventLogSpecifications;
 import za.org.grassroot.core.util.DebugUtil;
+import za.org.grassroot.core.util.UIDGenerator;
+import za.org.grassroot.integration.UrlShortener;
 import za.org.grassroot.integration.storage.ImageType;
 import za.org.grassroot.integration.storage.StorageBroker;
 import za.org.grassroot.services.geo.GeoLocationBroker;
@@ -21,8 +27,11 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 import static org.springframework.data.jpa.domain.Specifications.where;
+import static za.org.grassroot.core.enums.ActionLogType.EVENT_LOG;
 import static za.org.grassroot.core.enums.ActionLogType.TODO_LOG;
+import static za.org.grassroot.core.enums.EventLogType.IMAGE_RECORDED;
 import static za.org.grassroot.core.specifications.EventLogSpecifications.forEvent;
+import static za.org.grassroot.core.specifications.EventLogSpecifications.isImageLog;
 import static za.org.grassroot.core.specifications.EventLogSpecifications.ofType;
 import static za.org.grassroot.core.specifications.ImageRecordSpecifications.actionLogType;
 import static za.org.grassroot.core.specifications.ImageRecordSpecifications.actionLogUid;
@@ -35,6 +44,11 @@ import static za.org.grassroot.core.specifications.TodoLogSpecifications.ofType;
 @Service
 public class TaskImageBrokerImpl implements TaskImageBroker {
 
+    private static final Logger logger = LoggerFactory.getLogger(TaskImageBrokerImpl.class);
+
+    @Value("${grassroot.task.images.bucket:null}")
+    private String taskImagesBucket;
+
     private final UserRepository userRepository;
     private final EventRepository eventRepository;
     private final EventLogRepository eventLogRepository;
@@ -44,11 +58,12 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
 
     private final StorageBroker storageBroker;
     private final GeoLocationBroker geoLocationBroker;
+    private final UrlShortener urlShortener;
 
     @Autowired
     public TaskImageBrokerImpl(UserRepository userRepository, EventRepository eventRepository, EventLogRepository eventLogRepository,
                                TodoRepository todoRepository, TodoLogRepository todoLogRepository, ImageRecordRepository imageRecordRepository,
-                               StorageBroker storageBroker, GeoLocationBroker geoLocationBroker) {
+                               StorageBroker storageBroker, GeoLocationBroker geoLocationBroker, UrlShortener urlShortener) {
         this.userRepository = userRepository;
         this.eventRepository = eventRepository;
         this.eventLogRepository = eventLogRepository;
@@ -57,6 +72,15 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
         this.imageRecordRepository = imageRecordRepository;
         this.storageBroker = storageBroker;
         this.geoLocationBroker = geoLocationBroker;
+        this.urlShortener = urlShortener;
+    }
+
+    @Override
+    public String storeImagePreTask(TaskType taskType, MultipartFile file) {
+        String imageKey = UIDGenerator.generateId();
+        storageBroker.storeImage(TaskType.TODO.equals(taskType) ?
+                ActionLogType.TODO_LOG : ActionLogType.EVENT_LOG, imageKey, file);
+        return imageKey;
     }
 
     @Override
@@ -86,6 +110,33 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
     }
 
     @Override
+    @Transactional
+    public void recordImageForTask(String userUid, String taskUid, TaskType taskType, String imageKey, EventLogType logType) {
+        Objects.requireNonNull(userUid);
+        Objects.requireNonNull(taskUid);
+        Objects.requireNonNull(imageKey);
+
+        if (taskType.equals(TaskType.MEETING)) {
+            User user = userRepository.findOneByUid(userUid);
+            Event meeting = eventRepository.findOneByUid(taskUid);
+            EventLog imageLog = new EventLog(user, meeting, logType == null ? IMAGE_RECORDED : logType);
+            imageLog.setTag(imageKey); // slight abuse of usage, but no other possible tag here
+            eventLogRepository.save(imageLog);
+        }
+    }
+
+    @Override
+    public String getShortUrl(String imageKey) {
+        try {
+            return urlShortener.shortenImageUrl(taskImagesBucket, imageKey);
+        } catch (Exception e) {
+            // not great to have generic catch here but need robustness or have risk of notices not going out
+            logger.error("Error shortening URL! : {}", e);
+            return null;
+        }
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public List<ImageRecord> fetchImagesForTask(String userUid, String taskUid, TaskType taskType) {
         Objects.requireNonNull(userUid);
@@ -103,10 +154,11 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
         ActionLogType logType = isTodo ? TODO_LOG : ActionLogType.EVENT_LOG;
         List<String> imageLogUids = isTodo ?
                 todoLogRepository.findAll(where(forTodo((Todo) task)).and(ofType(TodoLogType.IMAGE_RECORDED)))
-                        .stream().map(TodoLog::getUid).collect(Collectors.toList()) :
-                eventLogRepository.findAll((where(forEvent((Event) task))).and(ofType(EventLogType.IMAGE_RECORDED)))
-                        .stream().map(EventLog::getUid).collect(Collectors.toList());
+                        .stream().map(l -> extractImageKey(l, logType)).collect(Collectors.toList()) :
+                eventLogRepository.findAll((where(forEvent((Event) task))).and(isImageLog()))
+                        .stream().map(l -> extractImageKey(l, logType)).collect(Collectors.toList());
 
+        logger.info("found this many UIDs: {}", imageLogUids.size());
         return imageLogUids
                 .stream()
                 .map(uid -> fetchLogImageDetails(uid, logType)) // in future we may have a log without a record, if image deleted
@@ -125,7 +177,7 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
     public TaskLog fetchLogForImage(String logUid, TaskType taskType) {
         return TaskType.TODO.equals(taskType) ?
                 todoLogRepository.findOneByUid(logUid):
-                eventLogRepository.findOneByUid(logUid);
+                eventLogRepository.findOne(EventLogSpecifications.isImageLogWithKey(logUid));
     }
 
     @Override
@@ -162,7 +214,7 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
     }
 
     private long countEventImages(Event event) {
-        return eventLogRepository.count(where(forEvent(event)).and(ofType(EventLogType.IMAGE_RECORDED)))
+        return eventLogRepository.count(where(forEvent(event)).and(isImageLog()))
                 - eventLogRepository.count(where(forEvent(event)).and(ofType(EventLogType.IMAGE_REMOVED)));
     }
 
@@ -221,8 +273,24 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
         return removedLogUid;
     }
 
+    private String extractImageKey(ActionLog actionLog, ActionLogType actionLogType) {
+        String uidToSearch;
+        if (!EVENT_LOG.equals(actionLogType)) {
+            uidToSearch = actionLog.getUid();
+        } else {
+            EventLog eventLog = (EventLog) actionLog;
+            if (EventLogType.IMAGE_AT_CREATION.equals(eventLog.getEventLogType())) {
+                uidToSearch = eventLog.getTag();
+            } else {
+                uidToSearch = actionLog.getUid();
+            }
+        }
+        return uidToSearch;
+    }
+
     private ImageRecord fetchLogImageDetails(String actionLogUid, ActionLogType actionLogType) {
-        return imageRecordRepository.findOne(where(actionLogUid(actionLogUid)).and(actionLogType(actionLogType)));
+        return imageRecordRepository.findOne(where(actionLogUid(actionLogUid))
+                .and(actionLogType(actionLogType)));
     }
 
     private String storeImageForMeeting(User user, String meetingUid, GeoLocation location, MultipartFile file) {
@@ -235,7 +303,6 @@ public class TaskImageBrokerImpl implements TaskImageBroker {
         }
 
         EventLog eventLog = new EventLog(user, meeting, EventLogType.IMAGE_RECORDED);
-
         if (location != null) {
             eventLog.setLocation(location);
             geoLocationBroker.calculateMeetingLocationInstant(meeting.getUid(), location, UserInterfaceType.WEB);

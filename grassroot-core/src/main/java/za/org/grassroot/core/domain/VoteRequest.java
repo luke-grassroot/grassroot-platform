@@ -23,14 +23,19 @@ public class VoteRequest extends EventRequest<VoteContainer> {
 
 	@Override
 	public boolean isFilled() {
-		if (getParent() == null) {
-			return false;
-		}
-		return isFilledWithCommonFields();
+		return getParent() != null && isFilledWithCommonFields();
 	}
 
 	private VoteRequest() {
 		// for JPA
+	}
+
+	public VoteRequest(User creatingUser, String subject) {
+		this.uid = UIDGenerator.generateId();
+		this.createdByUser = creatingUser;
+		this.name = subject;
+		this.reminderType = EventReminderType.DISABLED;
+		this.tags = new String[0];
 	}
 
 	public static VoteRequest makeEmpty() {
@@ -42,6 +47,7 @@ public class VoteRequest extends EventRequest<VoteContainer> {
 		request.reminderType = EventReminderType.DISABLED;
 		request.uid = UIDGenerator.generateId();
 		request.createdByUser = user;
+		request.tags = new String[0];
 		if (parent != null) request.setParent(parent);
 		return request;
 	}

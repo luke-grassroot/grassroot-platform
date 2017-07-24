@@ -56,7 +56,9 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                 .antMatchers("/api/**")
                 .antMatchers("/test/**")
                 .antMatchers("/sms/**")
-                .antMatchers("/image/**");
+                .antMatchers("/image/**")
+                .antMatchers("/auth/login/**")
+                .antMatchers("/auth/validateToken/**");
     }
 
     @Override
@@ -69,6 +71,7 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
                     .antMatchers("/user/recovery").permitAll()
                     .antMatchers("/user/recovery/success").permitAll()
                     .antMatchers("/grass-root-verification/*").permitAll()
+                    .antMatchers("/livewire/public/**").permitAll()
                     .antMatchers("/cardauth/**").permitAll()
                     .antMatchers("/ussd/**").hasIpAddress(environment.getProperty("grassroot.ussd.gateway", "127.0.0.1"))
                     .anyRequest().authenticated()

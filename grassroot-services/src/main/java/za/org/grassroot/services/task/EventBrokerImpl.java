@@ -67,9 +67,10 @@ public class EventBrokerImpl implements EventBroker {
 	private final MessageAssemblingService messageAssemblingService;
 	private final AccountGroupBroker accountGroupBroker;
 	private final GeoLocationBroker geoLocationBroker;
+	private final TaskImageBroker taskImageBroker;
 
 	@Autowired
-	public EventBrokerImpl(MeetingRepository meetingRepository, EventLogBroker eventLogBroker, EventRepository eventRepository, VoteRepository voteRepository, UidIdentifiableRepository uidIdentifiableRepository, UserRepository userRepository, AccountGroupBroker accountGroupBroker, GroupRepository groupRepository, PermissionBroker permissionBroker, LogsAndNotificationsBroker logsAndNotificationsBroker, CacheUtilService cacheUtilService, MessageAssemblingService messageAssemblingService, MeetingLocationRepository meetingLocationRepository, GeoLocationBroker geoLocationBroker) {
+	public EventBrokerImpl(MeetingRepository meetingRepository, EventLogBroker eventLogBroker, EventRepository eventRepository, VoteRepository voteRepository, UidIdentifiableRepository uidIdentifiableRepository, UserRepository userRepository, AccountGroupBroker accountGroupBroker, GroupRepository groupRepository, PermissionBroker permissionBroker, LogsAndNotificationsBroker logsAndNotificationsBroker, CacheUtilService cacheUtilService, MessageAssemblingService messageAssemblingService, MeetingLocationRepository meetingLocationRepository, GeoLocationBroker geoLocationBroker, TaskImageBroker taskImageBroker) {
 		this.meetingRepository = meetingRepository;
 		this.eventLogBroker = eventLogBroker;
 		this.eventRepository = eventRepository;
@@ -83,6 +84,7 @@ public class EventBrokerImpl implements EventBroker {
 		this.cacheUtilService = cacheUtilService;
 		this.messageAssemblingService = messageAssemblingService;
 		this.geoLocationBroker = geoLocationBroker;
+		this.taskImageBroker = taskImageBroker;
 	}
 
 	@Override
@@ -96,54 +98,28 @@ public class EventBrokerImpl implements EventBroker {
 		return meetingRepository.findOneByUid(meetingUid);
 	}
 
-    @Override
-    @Transactional
-    public Meeting createMeeting(String userUid, String parentUid, JpaEntityType parentType, String name, LocalDateTime eventStartDateTime, String eventLocation,
-								 boolean includeSubGroups, EventReminderType reminderType, int customReminderMinutes,
-								 String description, Set<String> assignMemberUids, MeetingImportance importance) {
-        Objects.requireNonNull(userUid);
-        Objects.requireNonNull(parentUid);
-        Objects.requireNonNull(parentType);
-        Objects.requireNonNull(assignMemberUids);
 
-		Instant eventStartDateTimeInSystem = convertToSystemTime(eventStartDateTime, getSAST());
-		validateEventStartTime(eventStartDateTimeInSystem);
+	@Override
+	@Transactional
+	public Meeting createMeeting(MeetingBuilderHelper helper) {
+		helper.validateMeetingFields();
 
-		User user = userRepository.findOneByUid(userUid);
-		MeetingContainer parent = uidIdentifiableRepository.findOneByUid(MeetingContainer.class, parentType, parentUid);
+		User user = userRepository.findOneByUid(helper.getUserUid());
+		MeetingContainer parent = uidIdentifiableRepository.findOneByUid(MeetingContainer.class,
+				helper.getParentType(), helper.getParentUid());
 
-		// todo : implement for generic parent types, once have migrated to jpa specifications
-		if (parentType.equals(JpaEntityType.GROUP)) {
-			Event possibleDuplicate = checkForDuplicate(userUid, parentUid, name, eventStartDateTimeInSystem);
-			if (possibleDuplicate != null && possibleDuplicate.getEventType().equals(EventType.MEETING)) { // todo : hand over to update meeting if anything different in parameters
-				logger.info("Detected duplicate meeting creation, returning the already-created one ... ");
-				return (Meeting) possibleDuplicate;
-			}
-
-			logger.info("Event limits enabled? {}", eventMonthlyLimitActive);
-			if (eventMonthlyLimitActive && accountGroupBroker.numberEventsLeftForGroup(parentUid) < 1) {
-				throw new AccountLimitExceededException();
-			}
+		Event possibleDuplicate = checkForDuplicate(helper.getUserUid(), helper.getParentUid(), helper.getName(), helper.getStartInstant());
+		if (possibleDuplicate != null) { // todo : hand over to update meeting if anything different in parameters
+			return (Meeting) possibleDuplicate;
 		}
 
+		checkForEventLimit(helper.getParentUid());
 		permissionBroker.validateGroupPermission(user, parent.getThisOrAncestorGroup(), Permission.GROUP_PERMISSION_CREATE_GROUP_MEETING);
 
-
-		if (name.length() > 40) {
-			throw new TaskNameTooLongException();
-		}
-
-		Meeting meeting = new Meeting(name, eventStartDateTimeInSystem, user, parent, eventLocation,
-                                      includeSubGroups, reminderType, customReminderMinutes, description, importance);
-
-		if (!assignMemberUids.isEmpty()) {
-			assignMemberUids.add(userUid); // enforces creating user part of meeting, if partial selection
-		}
-
-		meeting.assignMembers(assignMemberUids);
-
+		Meeting meeting = helper.convertToBuilder(user, parent).createMeeting();
 		// else sometimes reminder setting will be in the past, causing duplication of meetings; defaulting to 1 hours
-		if (!reminderType.equals(DISABLED) && meeting.getScheduledReminderTime().isBefore(Instant.now())) {
+		logger.debug("helper reminder type: {}, meeting scheduled reminder time: {}", helper.getReminderType(), meeting.getScheduledReminderTime());
+		if (!helper.getReminderType().equals(DISABLED) && meeting.getScheduledReminderTime().isBefore(Instant.now())) {
 			meeting.setCustomReminderMinutes(60);
 			meeting.setReminderType(CUSTOM);
 			meeting.updateScheduledReminderTime();
@@ -155,9 +131,14 @@ public class EventBrokerImpl implements EventBroker {
 		eventLogBroker.rsvpForEvent(meeting.getUid(), meeting.getCreatedByUser().getUid(), EventRSVPResponse.YES);
 
 		LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
-
 		EventLog eventLog = new EventLog(user, meeting, CREATED);
 		bundle.addLog(eventLog);
+
+		if (!StringUtils.isEmpty(helper.getTaskImageKey())) {
+			taskImageBroker.recordImageForTask(helper.getUserUid(), meeting.getUid(), TaskType.MEETING,
+					helper.getTaskImageKey(), EventLogType.IMAGE_AT_CREATION);
+			meeting.setImageUrl(taskImageBroker.getShortUrl(helper.getTaskImageKey()));
+		}
 
 		Set<Notification> notifications = constructEventInfoNotifications(meeting, eventLog, meeting.getMembers());
 		bundle.addNotifications(notifications);
@@ -165,6 +146,12 @@ public class EventBrokerImpl implements EventBroker {
 		logsAndNotificationsBroker.storeBundle(bundle);
 
 		return meeting;
+	}
+
+	private void checkForEventLimit(String parentUid) {
+		if (eventMonthlyLimitActive && accountGroupBroker.numberEventsLeftForGroup(parentUid) < 1) {
+			throw new AccountLimitExceededException();
+		}
 	}
 
 	// introducing so that we can check catch & handle duplicate requests (e.g., from malfunctions on Android client offline->queue->sync function)
@@ -186,11 +173,21 @@ public class EventBrokerImpl implements EventBroker {
 
 	private Set<Notification> constructEventInfoNotifications(Event event, EventLog eventLog, Set<User> usersToNotify) {
 		Set<Notification> notifications = new HashSet<>();
+		logger.debug("constructing event notifications ... has image URL? : {}", event.getImageUrl());
 		for (User member : usersToNotify) {
 			cacheUtilService.clearRsvpCacheForUser(member, event.getEventType());
 			String message = messageAssemblingService.createEventInfoMessage(member, event);
 			Notification notification = new EventInfoNotification(member, message, eventLog);
 			notifications.add(notification);
+		}
+		// check if creating user is on Android, in which case, add an explicit SMS
+		if (event.getCreatedByUser().getMessagingPreference().equals(UserMessagingPreference.ANDROID_APP)) {
+			logger.info("event creator on Android, sending an SMS so they know format");
+			User creator = event.getCreatedByUser();
+			String creatorMessage = messageAssemblingService.createEventInfoMessage(creator, event);
+			Notification smsNotification = new EventInfoNotification(creator, creatorMessage, eventLog);
+			smsNotification.setForAndroidTimeline(false);
+			notifications.add(smsNotification);
 		}
 		return notifications;
 	}
@@ -353,7 +350,7 @@ public class EventBrokerImpl implements EventBroker {
 	@Override
 	@Transactional
 	public Vote createVote(String userUid, String parentUid, JpaEntityType parentType, String name, LocalDateTime eventStartDateTime,
-						   boolean includeSubGroups, String description, Set<String> assignMemberUids) {
+						   boolean includeSubGroups, String description, Set<String> assignMemberUids, List<String> options) {
 		Objects.requireNonNull(userUid);
 		Objects.requireNonNull(parentUid);
 		Objects.requireNonNull(parentType);
@@ -387,6 +384,9 @@ public class EventBrokerImpl implements EventBroker {
 			assignMemberUids.add(userUid); // enforce creating user part of vote
 		}
 		vote.assignMembers(assignMemberUids);
+		if (options != null && !options.isEmpty()) {
+			vote.setVoteOptions(options);
+		}
 
 		voteRepository.save(vote);
 
@@ -726,41 +726,6 @@ public class EventBrokerImpl implements EventBroker {
 
 	@Override
 	@Transactional
-	public void sendVoteResults(String voteUid) {
-		Objects.requireNonNull(voteUid);
-		Vote vote = voteRepository.findOneByUid(voteUid);
-
-		logger.info("Sending vote results for vote", vote);
-
-		LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
-
-		EventLog eventLog = new EventLog(null, vote, RESULT);
-
-		ResponseTotalsDTO responseTotalsDTO = eventLogBroker.getResponseCountForEvent(vote);
-		Set<User> voteResultsNotificationSentMembers = new HashSet<>(userRepository.findNotificationTargetsForEvent(
-				vote, VoteResultsNotification.class));
-		for (User member : getAllEventMembers(vote)) {
-			if (!voteResultsNotificationSentMembers.contains(member)) {
-				String message = messageAssemblingService.createVoteResultsMessage(member, vote,
-						responseTotalsDTO.getYes(),
-						responseTotalsDTO.getNo(),
-						responseTotalsDTO.getMaybe(),
-						responseTotalsDTO.getNumberNoRSVP());
-				Notification notification = new VoteResultsNotification(member, message, eventLog);
-				bundle.addNotification(notification);
-			}
-		}
-
-		// we only want to include log if there are some notifications
-		if (!bundle.getNotifications().isEmpty()) {
-			bundle.addLog(eventLog);
-		}
-
-		logsAndNotificationsBroker.storeBundle(bundle);
-	}
-
-	@Override
-	@Transactional
 	@SuppressWarnings("unchecked") // for weirdness on event.getmembers
 	public void assignMembers(String userUid, String eventUid, Set<String> assignMemberUids) {
 		Objects.requireNonNull(userUid);
@@ -851,39 +816,32 @@ public class EventBrokerImpl implements EventBroker {
 	@Override
 	@Transactional(readOnly = true)
 	public List<Event> getOutstandingResponseForUser(User user, EventType eventType) {
-		logger.debug("getOutstandingResponseForUser..." + user.getPhoneNumber() + "...type..." + eventType.toString());
-		List<Event> outstandingRSVPs = cacheUtilService.getOutstandingResponseForUser(user, eventType);
-
-		if (outstandingRSVPs == null) {
+		long startTime = System.currentTimeMillis();
+	    List<Event> cachedRsvps = cacheUtilService.getOutstandingResponseForUser(user, eventType);
+		if (cachedRsvps != null) {
+			return cachedRsvps;
+		} else {
 			Map<Long, Long> eventMap = new HashMap<>();
-			outstandingRSVPs = new ArrayList<>();
-			List<Group> groups = groupRepository.findByMembershipsUserAndActiveTrue(user);
-
-			if (groups != null) {
-				logger.debug("getOutstandingResponseForUser...number of groups..." + groups.size());
-				for (Group group : groups) {
-					Predicate<Event> filter = event -> event.isRsvpRequired() && event.getEventType() == eventType
-							&& ((eventType == EventType.MEETING && event.getCreatedByUser().getId() != user.getId()) || eventType != EventType.MEETING);
-					Set<Event> upcomingEvents = group.getUpcomingEventsIncludingParents(filter);
-
-					for (Event event : upcomingEvents) {
-						if (eventType == EventType.VOTE && !checkUserJoinedBeforeVote(user, event, group)) {
-							logger.info(String.format("Excluding vote %s for %s as the user joined group %s after the vote was called", event.getName(), user.getPhoneNumber(), group.getId()));
-							continue;
-						}
-
-						if (!eventLogBroker.hasUserRespondedToEvent(event, user) && eventMap.get(event.getId()) == null) {
-							outstandingRSVPs.add(event);
-							eventMap.put(event.getId(), event.getId());
-						}
-					}
-
-				}
-				cacheUtilService.putOutstandingResponseForUser(user, eventType, outstandingRSVPs);
-			}
+			final List<Event> outstandingRSVPs = new ArrayList<>();
+			Predicate<Event> filter = event ->
+					event.isRsvpRequired()
+							&& event.getEventType() == eventType
+							&& ((eventType == EventType.MEETING && event.getCreatedByUser().getId() != user.getId())
+							|| eventType != EventType.MEETING);
+			// todo: well, fix this (consolidate into one criteria query)
+			groupRepository.findByMembershipsUserAndActiveTrue(user)
+					.forEach(g -> g.getUpcomingEventsIncludingParents(filter)
+							.stream()
+							.filter(e -> eventType == EventType.MEETING || checkUserJoinedBeforeVote(user, e, g))
+							.filter(e -> !eventLogBroker.hasUserRespondedToEvent(e, user) && eventMap.get(e.getId()) == null)
+							.forEach(e -> {
+								outstandingRSVPs.add(e);
+								eventMap.put(e.getId(), e.getId());
+							}));
+            cacheUtilService.putOutstandingResponseForUser(user, eventType, outstandingRSVPs);
+			logger.info("time to check for responses: {} msecs", System.currentTimeMillis() - startTime);
+			return outstandingRSVPs;
 		}
-
-		return outstandingRSVPs;
 	}
 
 	//N.B. remove this if statement if you want to allow votes for people that joined the group late

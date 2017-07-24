@@ -46,6 +46,8 @@ public class GroupResponseWrapper implements Comparable<GroupResponseWrapper> {
     private List<MembershipResponseWrapper> members;
     private List<String> invalidNumbers; // for added member / group creation error handling
 
+    private String language;
+
     private GroupResponseWrapper(Group group, Role role, boolean hasTasks) {
         Objects.requireNonNull(group);
         Objects.requireNonNull(role);
@@ -62,6 +64,7 @@ public class GroupResponseWrapper implements Comparable<GroupResponseWrapper> {
         this.defaultImage = group.getDefaultImage();
         this.description = group.getDescription();
         this.paidFor = group.isPaidFor();
+        this.language = group.getDefaultLanguage();
 
         if (group.hasValidGroupTokenCode()) {
             this.joinCode = group.getGroupTokenCode();
@@ -89,9 +92,12 @@ public class GroupResponseWrapper implements Comparable<GroupResponseWrapper> {
     public GroupResponseWrapper(Group group, GroupLog groupLog, Role role, boolean hasTasks){
         this(group, role, hasTasks);
         this.lastChangeType = GroupChangeType.getChangeType(groupLog);
-        this.lastChangeDescription = (groupLog.getDescription()!=null) ? groupLog.getDescription() : group.getDescription();
-        this.dateTime = groupLog.getCreatedDateTime().atZone(DateTimeUtil.getSAST()).toLocalDateTime();
-        this.lastMajorChangeMillis = groupLog.getCreatedDateTime().toEpochMilli();
+        this.lastChangeDescription = (groupLog != null && groupLog.getDescription()!=null) ?
+                groupLog.getDescription() : group.getDescription();
+        this.dateTime = groupLog == null ? group.getCreatedDateTimeAtSAST().toLocalDateTime() :
+                groupLog.getCreatedDateTime().atZone(DateTimeUtil.getSAST()).toLocalDateTime();
+        this.lastMajorChangeMillis = groupLog == null ? group.getCreatedDateTime().toEpochMilli() :
+                groupLog.getCreatedDateTime().toEpochMilli();
     }
 
     public String getGroupUid() {
@@ -153,6 +159,10 @@ public class GroupResponseWrapper implements Comparable<GroupResponseWrapper> {
     }
 
     public boolean isPaidFor() { return paidFor; }
+
+    public String getLanguage() {
+        return language;
+    }
 
     @Override
     public int compareTo(GroupResponseWrapper g) {

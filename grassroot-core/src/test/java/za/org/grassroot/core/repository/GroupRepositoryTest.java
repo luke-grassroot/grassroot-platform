@@ -24,7 +24,10 @@ import java.util.List;
 import java.util.function.Predicate;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.nullValue;
 import static org.junit.Assert.*;
+import static org.springframework.data.jpa.domain.Specifications.where;
+import static za.org.grassroot.core.specifications.GroupSpecifications.*;
 
 /**
  * @author Lesetse Kimwaga
@@ -54,11 +57,10 @@ public class GroupRepositoryTest {
 
     @Test
     public void shouldSaveUpComingEvents() {
+
         User user1 = userRepository.save(new User("3456"));
         Group group1 = groupRepository.save(new Group("Test Group", user1));
-        Event newEvent = eventRepository.save(new Meeting("new Meeting",
-                Instant.now().plus(1L, ChronoUnit.DAYS), user1, group1,
-                "limpopo"));
+        Event newEvent = eventRepository.save(new MeetingBuilder().setName("new Meeting").setStartDateTime(Instant.now().plus(1L, ChronoUnit.DAYS)).setUser(user1).setParent(group1).setEventLocation("limpopo").createMeeting());
 
         assertThat(eventRepository.count(), is(1L));
         assertNotNull(group1.getUpcomingEvents(Predicate.isEqual(newEvent), false));
@@ -81,10 +83,7 @@ public class GroupRepositoryTest {
         Event eventFromDb = eventRepository.findAll().iterator().next();
         assertNotNull(eventFromDb.getParent());
         assertTrue(eventFromDb.getParent().getUid().equals(group2.getUid()));
-
-
     }
-
 
     @Test
     public void shouldSaveTodoReminder() {
@@ -141,7 +140,7 @@ public class GroupRepositoryTest {
         assertNotNull(groupToCreate);
         groupToCreate.setImageUrl("http");
         assertTrue(groupToCreate.getImageUrl().equals("http"));
-        Group groupFromDb = groupRepository.findOneByImageUrl("http");
+        Group groupFromDb = groupRepository.findOne(where(hasImageUrl("http")));
         assertNotNull(groupFromDb);
         assertTrue(groupToCreate.getImageUrl().equals("http"));
     }
@@ -255,14 +254,12 @@ public class GroupRepositoryTest {
 
         User userToRemove1 = new User("56788");
         userRepository.save(userToRemove1);
-
         List<User> userNumber = Arrays.asList(userToRemove,userToRemove1);
 
         Group groupToCreate = new Group("Test Group",userToRemove);
         groupToCreate.addMembers(userNumber,BaseRoles.ROLE_ORDINARY_MEMBER);
         groupRepository.save(groupToCreate);
         assertThat(groupRepository.count(),is(1L));
-
 
         Group groupFromDb = groupRepository.findAll().iterator().next();
         assertNotNull(groupToCreate);
@@ -279,10 +276,8 @@ public class GroupRepositoryTest {
     @Test
     public void shouldAddChildGroup() throws Exception {
         assertThat(groupRepository.count(),is(0L));
-
         User userToCreate = new User("56789");
         userRepository.save(userToCreate);
-
         Group groupToAddParent = new Group("TestGroup",userToCreate);
         groupRepository.save(groupToAddParent);
 
@@ -314,7 +309,6 @@ public class GroupRepositoryTest {
        assertThat(groupRepository.count(),is(0L));
        User userToDiscover = new User("56789");
        userRepository.save(userToDiscover);
-
        Group groupToDiscover = new Group("TestGroup",userToDiscover);
        groupRepository.save(groupToDiscover);
 
@@ -394,9 +388,7 @@ public class GroupRepositoryTest {
 
         User newUser = userRepository.save(new User("12345"));
         Group testGroup = groupRepository.save(new Group("testGroup", newUser));
-        Event newEvent = eventRepository.save(new Meeting("test meeting",
-                Instant.now().plus(1L, ChronoUnit.DAYS), newUser, testGroup,
-                "somewhere in soweto"));
+        Event newEvent = eventRepository.save(new MeetingBuilder().setName("test meeting").setStartDateTime(Instant.now().plus(1L, ChronoUnit.DAYS)).setUser(newUser).setParent(testGroup).setEventLocation("somewhere in soweto").createMeeting());
 
         assertThat(eventRepository.count(), is(1L));
         assertNotNull(testGroup.getEvents());
@@ -424,8 +416,8 @@ public class GroupRepositoryTest {
 
         User userToCreate = userRepository.save(new User("56789"));
         Group testGroup = groupRepository.save(new Group("testGroup",userToCreate));
-        Event createEvent = eventRepository.save(new Meeting("new Event",Instant.now().plus(
-                1L,ChronoUnit.DAYS), userToCreate,testGroup,"limpopo"));
+        Event createEvent = eventRepository.save(new MeetingBuilder().setName("new Event").setStartDateTime(Instant.now().plus(
+                1L, ChronoUnit.DAYS)).setUser(userToCreate).setParent(testGroup).setEventLocation("limpopo").createMeeting());
 
         assertThat(eventRepository.count(),is(1L));
         assertNotNull(testGroup.getDescendantEvents());
@@ -464,12 +456,6 @@ public class GroupRepositoryTest {
        assertTrue(groupFromDb.getJoinApprover().equals(newUser));
 
     }
-
-    /*
-       code ends here
-     */
-
-
     @Test
     public void shouldSaveAndRetrieveGroupData() throws Exception {
 
@@ -488,7 +474,6 @@ public class GroupRepositoryTest {
         assertThat(groupFromDb.getGroupName(), is("TestGroup"));
         assertThat(groupFromDb.getCreatedByUser().getPhoneNumber(), is("56789"));
     }
-
     @Test
     public void shouldSaveWithAddedMember() throws Exception {
         assertThat(groupRepository.count(), is(0L));
@@ -549,7 +534,8 @@ public class GroupRepositoryTest {
         Group gb = groupRepository.save(new Group("gb", user));
         Group gb1 = groupRepository.save(new Group("gb1", user, gb));
         Group gb2 = groupRepository.save(new Group("gb2", user, gb));
-        List<Group> children = groupRepository.findByParentAndActiveTrue(gb);
+        List<Group> children = groupRepository.findAll(where(
+                hasParent(gb)).and(isActive()));;
         assertEquals(2,children.size());
     }
 
@@ -590,8 +576,8 @@ public class GroupRepositoryTest {
         Integer fakeToken = realToken - 10;
         group.setGroupTokenCode(String.valueOf(realToken));
         groupRepository.save(group);
-        Group groupFromDb1 = groupRepository.findByGroupTokenCode(String.valueOf(realToken));
-        Group groupFromDb2 = groupRepository.findByGroupTokenCode(String.valueOf(fakeToken));
+        Group groupFromDb1 = groupRepository.findOne(hasJoinCode(String.valueOf(realToken)));
+        Group groupFromDb2 = groupRepository.findOne(hasJoinCode(String.valueOf(fakeToken)));
         assertNotNull(groupFromDb1);
         assertNull(groupFromDb2);
         assertEquals(groupFromDb1, group);
@@ -609,15 +595,15 @@ public class GroupRepositoryTest {
         group.setGroupTokenCode(token);
         group.setTokenExpiryDateTime(testDate2);
         groupRepository.save(group);
-        Group group1 = groupRepository.findByGroupTokenCodeAndTokenExpiryDateTimeAfter(token, testDate1);
-        Group group2 = groupRepository.findByGroupTokenCodeAndTokenExpiryDateTimeAfter(token, testDate3);
+        Group group1 = groupRepository.findOne(where(hasJoinCode(token)).and(joinCodeExpiresAfter(testDate1)));
+        Group group2 = groupRepository.findOne(where(hasJoinCode(token)).and(joinCodeExpiresAfter(testDate3)));
         assertNotNull(group1);
         assertEquals(group1, group);
         assertNull(group2);
 
         group.setTokenExpiryDateTime(testDate3);
         groupRepository.save(group);
-        Group group3 = groupRepository.findByGroupTokenCodeAndTokenExpiryDateTimeAfter(token, testDate2);
+        Group group3 = groupRepository.findOne(where(hasJoinCode(token)).and(joinCodeExpiresAfter(testDate2)));
         assertNotNull(group3);
         assertEquals(group3, group);
     }
@@ -633,12 +619,12 @@ public class GroupRepositoryTest {
         group.setGroupTokenCode(token);
         group.setTokenExpiryDateTime(testDate2);
         groupRepository.save(group);
-        Group group1 = groupRepository.findByGroupTokenCodeAndTokenExpiryDateTimeAfter(token, testDate1);
+        Group group1 = groupRepository.findOne(where(hasJoinCode(token)).and(joinCodeExpiresAfter(testDate1)));
         assertNotNull(group1);
         assertEquals(group, group1);
 
         group.setTokenExpiryDateTime(Instant.now());
-        Group group2 = groupRepository.findByGroupTokenCodeAndTokenExpiryDateTimeAfter(token, testDate1);
+        Group group2 = groupRepository.findOne(where(hasJoinCode(token)).and(joinCodeExpiresAfter(testDate1)));
         assertNull(group2);
 
     }
@@ -689,6 +675,40 @@ public class GroupRepositoryTest {
         Page<Group> activeGroups = groupRepository.findByCreatedByUserAndActiveTrueOrderByCreatedDateTimeDesc(user, new PageRequest(0,3));
         assertFalse(activeGroups.hasNext());
     }
+
+    @Test
+    public void shouldHaveValidGroupToken() throws Exception {
+
+        User user = userRepository.save(new User("4879342"));
+        Group groupToken = groupRepository.save(new Group(
+                "Token",user));
+        assertNotNull(groupToken.getUid());
+
+        Instant tokenTime = Instant.now().plus(10,
+                ChronoUnit.DAYS);
+
+        groupToken.setTokenExpiryDateTime(tokenTime);
+        groupToken.setGroupTokenCode("1234");
+        assertTrue(groupToken.hasValidGroupTokenCode());
+        assertThat(groupToken.getTokenExpiryDateTime(),
+                is(tokenTime));
+        assertThat(groupToken.getGroupTokenCode(),is("1234"));
+
+        Group groupDb = groupRepository.findAll().iterator().next();
+        assertThat(groupDb.getTokenExpiryDateTime(),is(tokenTime));
+
+        Group group = groupRepository.findAll().iterator().next();
+        Instant expiredTime = Instant.now().minus(9,ChronoUnit.DAYS);
+        group.setGroupTokenCode(null);
+        group.setTokenExpiryDateTime(expiredTime);
+        groupRepository.save(group);
+
+        Group newGroupDb = groupRepository.findAll().iterator().next();
+        assertThat(newGroupDb.getGroupTokenCode(),is(nullValue()));
+        assertThat(newGroupDb.getTokenExpiryDateTime(),is(expiredTime));
+
+    }
+
 
     @Test
     public void shouldSaveAndRetrievePaidFor() {

@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.env.Environment;
+import org.springframework.data.jpa.domain.Specifications;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,22 +21,23 @@ import za.org.grassroot.core.enums.UserLogType;
 import za.org.grassroot.core.repository.GroupLogRepository;
 import za.org.grassroot.core.repository.GroupRepository;
 import za.org.grassroot.core.repository.UserRepository;
+import za.org.grassroot.core.specifications.GroupSpecifications;
 import za.org.grassroot.core.util.AfterTxCommitTask;
 import za.org.grassroot.core.util.DebugUtil;
 import za.org.grassroot.core.util.InvalidPhoneNumberException;
-import za.org.grassroot.integration.GroupChatService;
-import za.org.grassroot.integration.mqtt.MqttSubscriptionService;
-import za.org.grassroot.integration.xmpp.GcmService;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 import za.org.grassroot.services.MessageAssemblingService;
 import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.exception.GroupDeactivationNotAvailableException;
 import za.org.grassroot.services.exception.GroupSizeLimitExceededException;
 import za.org.grassroot.services.exception.InvalidTokenException;
+import za.org.grassroot.services.user.GcmRegistrationBroker;
 import za.org.grassroot.services.util.LogsAndNotificationsBroker;
 import za.org.grassroot.services.util.LogsAndNotificationsBundle;
 import za.org.grassroot.services.util.TokenGeneratorService;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -70,11 +72,9 @@ public class GroupBrokerImpl implements GroupBroker {
     private final LogsAndNotificationsBroker logsAndNotificationsBroker;
     private final TokenGeneratorService tokenGeneratorService;
     private final MessageAssemblingService messageAssemblingService;
+    private final MessagingServiceBroker messagingServiceBroker;
 
-    // todo : consolidate these to cut down all these dependencies & do null checks so they don't break methods
-    private GroupChatService groupChatService;
-    private GcmService gcmService;
-    private MqttSubscriptionService mqttSubscriptionService;
+    private GcmRegistrationBroker gcmRegistrationBroker;
 
     private final AccountGroupBroker accountGroupBroker;
 
@@ -83,7 +83,7 @@ public class GroupBrokerImpl implements GroupBroker {
                            GroupLogRepository groupLogRepository, PermissionBroker permissionBroker,
                            ApplicationEventPublisher applicationEventPublisher, LogsAndNotificationsBroker logsAndNotificationsBroker,
                            TokenGeneratorService tokenGeneratorService, MessageAssemblingService messageAssemblingService,
-                           AccountGroupBroker accountGroupBroker) {
+                           MessagingServiceBroker messagingServiceBroker, AccountGroupBroker accountGroupBroker) {
         this.groupRepository = groupRepository;
         this.environment = environment;
         this.userRepository = userRepository;
@@ -93,22 +93,17 @@ public class GroupBrokerImpl implements GroupBroker {
         this.logsAndNotificationsBroker = logsAndNotificationsBroker;
         this.tokenGeneratorService = tokenGeneratorService;
         this.messageAssemblingService = messageAssemblingService;
+        this.messagingServiceBroker = messagingServiceBroker;
         this.accountGroupBroker = accountGroupBroker;
     }
 
     @Autowired(required = false)
-    public void setGcmService(GcmService gcmService) {
-        this.gcmService = gcmService;
+    public void setGcmRegistrationBroker(GcmRegistrationBroker gcmRegistrationBroker) {
+        this.gcmRegistrationBroker = gcmRegistrationBroker;
     }
 
     @Autowired(required = false)
-    public void setGroupChatService(GroupChatService groupChatService) {
-        this.groupChatService = groupChatService;
-    }
-
-    @Autowired(required = false)
-    public void setMqttSubscriptionService(MqttSubscriptionService mqttSubscriptionService) {
-        this.mqttSubscriptionService = mqttSubscriptionService;
+    public void setGroupChatService(GroupChatBroker groupChatService) {
     }
 
     @Override
@@ -162,13 +157,10 @@ public class GroupBrokerImpl implements GroupBroker {
         permissionBroker.setRolePermissionsFromTemplate(group, groupPermissionTemplate);
         group = groupRepository.save(group);
 
-        if (mqttSubscriptionService != null) {
-            mqttSubscriptionService.subscribeServerToGroupTopic(group);
-        }
-
         logger.info("Group created under UID {}", group.getUid());
 
-        addGroupMembersToChatAfterCommit(group, user);
+        messagingServiceBroker.subscribeServerToGroupChatTopic(group.getUid());
+        // addGroupMembersToChatAfterCommit(group, user);
 
         if (openJoinToken) {
             JoinTokenOpeningResult joinTokenOpeningResult = openJoinTokenInternal(user, group, null);
@@ -184,13 +176,12 @@ public class GroupBrokerImpl implements GroupBroker {
         if (!actionLogs.isEmpty()) {
             LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
             bundle.addLogs(actionLogs);
-            AfterTxCommitTask afterTxCommitTask = () -> logsAndNotificationsBroker.asyncStoreBundle(bundle); // we want to log group events after transaction has committed
-            applicationEventPublisher.publishEvent(afterTxCommitTask);
+            storeBundleAfterCommit(bundle);
         }
     }
 
-    private void addGroupMembersToChatAfterCommit(Group group, User user) {
-        AfterTxCommitTask afterTxCommitTask = () -> groupChatService.addAllGroupMembersToChat(group, user);
+    private void storeBundleAfterCommit(LogsAndNotificationsBundle bundle) {
+        AfterTxCommitTask afterTxCommitTask = () -> logsAndNotificationsBroker.asyncStoreBundle(bundle); // we want to log group events after transaction has committed
         applicationEventPublisher.publishEvent(afterTxCommitTask);
     }
 
@@ -281,7 +272,7 @@ public class GroupBrokerImpl implements GroupBroker {
             permissionBroker.validateGroupPermission(user, group, Permission.GROUP_PERMISSION_ADD_GROUP_MEMBER);
             if (!checkGroupSizeLimit(group, membershipInfos.size())) {
                 throw new GroupSizeLimitExceededException();
-            };
+            }
         } else {
             permissionBroker.validateSystemRole(user, BaseRoles.ROLE_SYSTEM_ADMIN);
         }
@@ -289,7 +280,7 @@ public class GroupBrokerImpl implements GroupBroker {
         logger.info("Adding members: group={}, memberships={}, user={}", group, membershipInfos, user);
         try {
             LogsAndNotificationsBundle bundle = addMemberships(user, group, membershipInfos, false);
-            logsAndNotificationsBroker.asyncStoreBundle(bundle);
+            storeBundleAfterCommit(bundle);
         } catch (InvalidPhoneNumberException e) {
             logger.info("Error! Invalid phone number : " + e.getMessage());
         }
@@ -313,16 +304,12 @@ public class GroupBrokerImpl implements GroupBroker {
         group.addMembers(userSet, BaseRoles.ROLE_ORDINARY_MEMBER);
 
         LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
-
-        @SuppressWarnings("unchecked")
-        Set<Meeting> meetings = (Set) group.getUpcomingEventsIncludingParents(event -> event.getEventType().equals(EventType.MEETING));
-
-        addGroupMembersToChatAfterCommit(group, user);
+        // addGroupMembersToChatAfterCommit(group, user);
 
         for (User u  : users) {
             GroupLog groupLog = new GroupLog(group, user, GroupLogType.GROUP_MEMBER_ADDED, u.getId());
             bundle.addLog(groupLog);
-            notifyNewMembersOfUpcomingMeetings(bundle, u, group, groupLog, meetings);
+            notifyNewMembersOfUpcomingMeetings(bundle, u, group, groupLog);
         }
 
         logsAndNotificationsBroker.asyncStoreBundle(bundle);
@@ -340,11 +327,13 @@ public class GroupBrokerImpl implements GroupBroker {
         logger.info("Adding a member via token code: group={}, user={}, code={}", group, user, tokenPassed);
         group.addMember(user, BaseRoles.ROLE_ORDINARY_MEMBER);
 
-        Set<ActionLog> logs = new HashSet<>();
-        logs.add(new GroupLog(group, user, GroupLogType.GROUP_MEMBER_ADDED_VIA_JOIN_CODE, user.getId(),
-                                    "Member joined via join code: " + tokenPassed));
-        logs.add(new UserLog(userUidToAdd, UserLogType.USED_A_JOIN_CODE, groupUid, UNKNOWN));
-        logActionLogsAfterCommit(logs);
+        LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
+        GroupLog groupLog = new GroupLog(group, user, GroupLogType.GROUP_MEMBER_ADDED_VIA_JOIN_CODE, user.getId(),
+                                    "Member joined via join code: " + tokenPassed);
+        bundle.addLog(groupLog);
+        bundle.addLog(new UserLog(userUidToAdd, UserLogType.USED_A_JOIN_CODE, groupUid, UNKNOWN));
+        notifyNewMembersOfUpcomingMeetings(bundle, user, group, groupLog);
+        storeBundleAfterCommit(bundle);
     }
 
     @Override
@@ -435,23 +424,17 @@ public class GroupBrokerImpl implements GroupBroker {
             bundle.addLog(new UserLog(createdUser.getUid(), UserLogType.CREATED_IN_DB, String.format("Created by being added to group with ID: %s", group.getUid()), UNKNOWN));
         }
 
-        @SuppressWarnings("unchecked")
-        Set<Meeting> meetings = (Set) group.getUpcomingEventsIncludingParents(event -> event.getEventType().equals(EventType.MEETING));
         final GroupLogType logType = duringGroupCreation ? GroupLogType.GROUP_MEMBER_ADDED_AT_CREATION : GroupLogType.GROUP_MEMBER_ADDED;
 
-        if (!duringGroupCreation) { // todo : just add the new users
+        /*if (!duringGroupCreation) { // todo : just add the new users
             addGroupMembersToChatAfterCommit(group,initiator);
-        }
-
-        logger.debug("added user to group chat");
+        }*/
 
         for (Membership membership : memberships) {
             User member = membership.getUser();
-
             GroupLog groupLog = new GroupLog(group, initiator, logType, member.getId());
             bundle.addLog(groupLog);
-
-            notifyNewMembersOfUpcomingMeetings(bundle, member, group, groupLog, meetings);
+            notifyNewMembersOfUpcomingMeetings(bundle, member, group, groupLog);
         }
 
         logger.info("Done with member add subroutine, returning bundle");
@@ -462,8 +445,9 @@ public class GroupBrokerImpl implements GroupBroker {
     // for each meeting that belongs to this group, or it belongs to one of parent groups and apply to subgroups,
     // we create event notification for new member, but in case when meeting belongs to parent group, then only if member
     // is not already contained in this ancestor group (otherwise, it already got the notification for such meetings)
-    private void notifyNewMembersOfUpcomingMeetings(LogsAndNotificationsBundle bundle, User user, Group group, GroupLog groupLog,
-                                                    Set<Meeting> meetings) {
+    private void notifyNewMembersOfUpcomingMeetings(LogsAndNotificationsBundle bundle, User user, Group group, GroupLog groupLog) {
+        @SuppressWarnings("unchecked")
+        Set<Meeting> meetings = (Set) group.getUpcomingEventsIncludingParents(event -> event.getEventType().equals(EventType.MEETING));
         meetings.forEach(m -> {
             Group meetingGroup = m.getAncestorGroup();
             if (meetingGroup.equals(group) || !meetingGroup.hasMember(user)) {
@@ -481,14 +465,13 @@ public class GroupBrokerImpl implements GroupBroker {
         Set<ActionLog> actionLogs = new HashSet<>();
         for (Membership membership : memberships) {
             group.removeMembership(membership);
-            if (gcmService != null && gcmService.hasGcmKey(membership.getUser())) {
+            if (gcmRegistrationBroker != null && gcmRegistrationBroker.hasGcmKey(membership.getUser())) {
                 try {
-                    gcmService.unsubscribeFromTopic(gcmService.getGcmKey(membership.getUser()),group.getUid());
-                } catch (Exception e) {
+                    gcmRegistrationBroker.changeTopicSubscription(membership.getUser().getUid(), group.getUid(), false);
+                } catch (IOException e) {
                     logger.error("Unable to unsubscribe member with uid={} from group topic ={}", membership.getUser(), group);
                 }
             }
-
             actionLogs.add(new GroupLog(group, initiator, GroupLogType.GROUP_MEMBER_REMOVED, membership.getUser().getId()));
         }
         return actionLogs;
@@ -745,6 +728,23 @@ public class GroupBrokerImpl implements GroupBroker {
 
     @Override
     @Transactional
+    public void updateMemberAlias(String userUid, String groupUid, String alias) {
+        Objects.requireNonNull(userUid);
+        Objects.requireNonNull(groupUid);
+
+        User user = userRepository.findOneByUid(userUid);
+        Group group = groupRepository.findOneByUid(groupUid);
+
+        Membership membership = group.getMembership(user);
+        membership.setAlias(alias);
+
+        logActionLogsAfterCommit(Collections.singleton(
+                new GroupLog(group, user, GroupLogType.CHANGED_ALIAS, 0L, alias)
+        ));
+    }
+
+    @Override
+    @Transactional
     public void combinedEdits(String userUid, String groupUid, String groupName, String description, boolean resetToDefaultImage, GroupDefaultImage defaultImage,
                               boolean discoverable, boolean toCloseJoinCode, Set<String> membersToRemove, Set<String> organizersToAdd) {
         Objects.requireNonNull(userUid);
@@ -833,12 +833,7 @@ public class GroupBrokerImpl implements GroupBroker {
         Group group = load(groupUid);;
         User user = userRepository.findOneByUid(userUid);
 
-        // since this might be called from a parent, via recursion, on which this will throw an error, rather catch & throw
-        try {
-            permissionBroker.validateGroupPermission(user, group, Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS);
-        } catch (AccessDeniedException e) {
-            return;
-        }
+        permissionBroker.validateGroupPermission(user, group, Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS);
 
         Set<User> groupMembers = group.getMembers();
 
@@ -851,11 +846,15 @@ public class GroupBrokerImpl implements GroupBroker {
         group.setDefaultLanguage(newLocale);
 
         if (includeSubGroups) {
-            List<Group> subGroups = new ArrayList<>(groupRepository.findByParentAndActiveTrue(group));
-            if (!subGroups.isEmpty()) {
-                for (Group subGroup : subGroups)
-                    updateGroupDefaultLanguage(userUid, subGroup.getUid(), newLocale, true);
-            }
+            groupRepository.findAll(Specifications.where(
+                    GroupSpecifications.hasParent(group)).and(GroupSpecifications.isActive()))
+            .forEach(g -> {
+                try {
+                    updateGroupDefaultLanguage(userUid, g.getUid(), newLocale, true);
+                } catch (AccessDeniedException e) {
+                    logger.info("Skipping subgroup as permissions don't apply");
+                }
+            });
         }
 
         logActionLogsAfterCommit(Collections.singleton(new GroupLog(group, user, GroupLogType.LANGUAGE_CHANGED,

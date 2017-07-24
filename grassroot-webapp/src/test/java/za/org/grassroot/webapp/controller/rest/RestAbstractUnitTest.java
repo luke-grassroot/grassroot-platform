@@ -4,17 +4,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.runners.MockitoJUnitRunner;
-import org.springframework.context.MessageSource;
-import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.repository.EventLogRepository;
-import za.org.grassroot.core.repository.VerificationTokenCodeRepository;
-import za.org.grassroot.integration.xmpp.GcmService;
-import za.org.grassroot.integration.sms.SmsSendingService;
-import za.org.grassroot.services.*;
-import za.org.grassroot.services.account.AccountBroker;
+import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.group.GroupBroker;
 import za.org.grassroot.services.group.GroupJoinRequestService;
 import za.org.grassroot.services.group.GroupQueryBroker;
@@ -22,7 +16,7 @@ import za.org.grassroot.services.task.EventBroker;
 import za.org.grassroot.services.task.EventLogBroker;
 import za.org.grassroot.services.task.TaskBroker;
 import za.org.grassroot.services.task.TodoBroker;
-import za.org.grassroot.services.user.PasswordTokenService;
+import za.org.grassroot.services.user.GcmRegistrationBroker;
 import za.org.grassroot.services.user.UserManagementService;
 
 import java.time.Instant;
@@ -32,15 +26,9 @@ import java.time.temporal.ChronoUnit;
 import static za.org.grassroot.core.util.DateTimeUtil.convertToUserTimeZone;
 import static za.org.grassroot.core.util.DateTimeUtil.getSAST;
 
-/**
- * Created by paballo on 2016/02/18.
- *
- *
- */
 @RunWith(MockitoJUnitRunner.class)
 @ContextConfiguration
 public class RestAbstractUnitTest {
-
     protected final static String testUserPhone = "27815550000";
     protected final static String testUserCode = "2394";
     protected final static String testGroupName = "test_group";
@@ -51,69 +39,51 @@ public class RestAbstractUnitTest {
     protected final static Instant testInstant = Instant.now().plus(5, ChronoUnit.HOURS);
     protected final static LocalDateTime testDateTime = convertToUserTimeZone(testInstant, getSAST()).toLocalDateTime();
     protected final static User sessionTestUser = new User(testUserPhone, "testUser");
-
     protected final static Group testGroup = new Group(testGroupName, sessionTestUser);
 
     protected MockMvc mockMvc;
 
-    protected final static Vote voteEvent = new Vote(testEventTitle,
-                                                     testInstant,
-                                                     sessionTestUser,
-                                                     testGroup,
-                                                     true,
-            testEventDescription);
+    protected final static Vote voteEvent = new Vote(testEventTitle, testInstant, sessionTestUser, testGroup, true, testEventDescription);
 
-    protected final static Meeting meetingEvent = new Meeting(testEventTitle, testInstant, sessionTestUser, testGroup, testEventLocation, true, EventReminderType.DISABLED, 15, testEventDescription, null);
+    protected final static Meeting meetingEvent = new MeetingBuilder().setName(testEventTitle).setStartDateTime(testInstant).setUser(sessionTestUser).setParent(testGroup).setEventLocation(testEventLocation).setIncludeSubGroups(true).setReminderType(EventReminderType.DISABLED).setCustomReminderMinutes(15).setDescription(testEventDescription).setImportance(null).createMeeting();
 
     protected final static Todo TEST_TO_DO = new Todo(sessionTestUser, testGroup, "A test log book", testInstant);
 
-
     @Mock
     protected PermissionBroker permissionBrokerMock;
-    @Mock
-    protected AccountBroker accountBrokerMock;
+
     @Mock
     protected EventLogBroker eventLogBrokerMock;
+
     @Mock
     protected EventLogRepository eventLogRepositoryMock;
+
     @Mock
     protected TodoBroker todoBrokerMock;
+
     @Mock
     protected UserManagementService userManagementServiceMock;
-    @Mock
-    protected PasswordTokenService passwordTokenServiceMock;
+
     @Mock
     protected GroupJoinRequestService groupJoinRequestServiceMock;
-    @Mock
-    protected VerificationTokenCodeRepository verificationTokenCodeRepositoryMock;
+
     @Mock
     protected GroupBroker groupBrokerMock;
+
     @Mock
     protected GroupQueryBroker groupQueryBrokerMock;
 
     @Mock
     protected EventBroker eventBrokerMock;
+
     @Mock
     protected TaskBroker taskBrokerMock;
-    @Mock
-    protected GcmService gcmServiceMock;
-    @Mock
-    protected MessageAssemblingService messageAssemblingServiceMock;
-    @Mock
-    protected SmsSendingService smsSendingServiceMock;
 
-    protected MessageSource messageSource() {
-
-        ResourceBundleMessageSource messageSource = new ResourceBundleMessageSource();
-        messageSource.setBasename("messages");
-        messageSource.setUseCodeAsDefaultMessage(true);
-
-        return messageSource;
-    }
+    @Mock
+    protected GcmRegistrationBroker gcmRegistrationBrokerMock;
 
     @Test
-    public void dummyTest() throws Exception{
-
+    public void dummyTest () throws Exception {
+        //required to the runwith annotation
     }
-
 }

@@ -50,7 +50,7 @@ public interface UserManagementService {
 
     String generateAndroidUserVerifier(String phoneNumber, String displayName);
 
-    String regenerateUserVerifier(String phoneNumber);
+    String regenerateUserVerifier(String phoneNumber, boolean createUserIfNotExists);
 
     /*
     Methods to update user properties
@@ -81,8 +81,6 @@ public interface UserManagementService {
     boolean needsToRenameSelf(User sessionUser);
 
     void sendAndroidLinkSms(String userUid);
-
-    Group fetchGroupUserMustRename(User user);
 
     List<String[]> findOthersInGraph(User user, String nameFragment);
 

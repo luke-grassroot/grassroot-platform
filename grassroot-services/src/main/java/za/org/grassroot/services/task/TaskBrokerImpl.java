@@ -8,6 +8,8 @@ import org.springframework.data.jpa.domain.Specifications;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import za.org.grassroot.core.domain.*;
+import za.org.grassroot.core.domain.EventLog;
+import za.org.grassroot.core.domain.TodoLog;
 import za.org.grassroot.core.dto.TaskDTO;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.enums.EventType;
@@ -26,6 +28,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static org.springframework.data.jpa.domain.Specifications.where;
+import static za.org.grassroot.core.specifications.EventLogSpecifications.forEvent;
+import static za.org.grassroot.core.specifications.EventLogSpecifications.forUser;
+import static za.org.grassroot.core.specifications.EventLogSpecifications.isResponseToAnEvent;
 import static za.org.grassroot.services.specifications.TodoSpecifications.*;
 
 /**
@@ -109,7 +115,7 @@ public class TaskBrokerImpl implements TaskBroker {
                 taskToReturn = null;
         }
 
-        log.info("Task created by user: {}", taskToReturn.isCreatedByUser());
+        log.debug("Task created by user: {}", taskToReturn.isCreatedByUser());
         return taskToReturn;
     }
 
@@ -211,6 +217,7 @@ public class TaskBrokerImpl implements TaskBroker {
         User user = userRepository.findOneByUid(userUid);
         Instant now = Instant.now();
 
+        // todo : switch all of these to using assignment instead of just group
         // todo : use specifications when those are wired up properly
         List<Event> events = eventRepository.findByParentGroupMembershipsUserAndEventStartDateTimeGreaterThanAndCanceledFalse(user, now);
 
@@ -287,7 +294,8 @@ public class TaskBrokerImpl implements TaskBroker {
 	private Set<TaskDTO> resolveEventTaskDtos(List<Event> events, User user, Instant changedSince) {
         Set<TaskDTO> taskDtos = new HashSet<>();
         for (Event event : events) {
-            EventLog userResponseLog = eventLogRepository.findByEventAndUserAndEventLogType(event, user, EventLogType.RSVP);
+            EventLog userResponseLog = eventLogRepository.findOne(where(forEvent(event))
+                    .and(forUser(user)).and(isResponseToAnEvent()));
             if (changedSince == null || isEventAddedOrUpdatedSince(event, userResponseLog, changedSince)) {
                 taskDtos.add(new TaskDTO(event, user, userResponseLog));
             }
@@ -297,11 +305,7 @@ public class TaskBrokerImpl implements TaskBroker {
 
     private boolean partOfGroupBeforeVoteCalled(Event event, User user) {
         Membership membership = event.getAncestorGroup().getMembership(user);
-        if (membership == null) {
-            return false;
-        } else {
-            return event.getCreatedDateTime().isAfter(membership.getJoinTime());
-        }
+        return membership != null && event.getCreatedDateTime().isAfter(membership.getJoinTime());
     }
 
     private Set<TaskDTO> resolveTodoTaskDtos(List<Todo> todos, User user, Instant changedSince) {

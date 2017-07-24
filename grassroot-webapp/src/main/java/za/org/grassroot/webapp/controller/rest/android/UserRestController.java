@@ -18,7 +18,7 @@ import za.org.grassroot.core.enums.VerificationCodeType;
 import za.org.grassroot.core.util.InvalidPhoneNumberException;
 import za.org.grassroot.core.util.PhoneNumberUtil;
 import za.org.grassroot.integration.NotificationService;
-import za.org.grassroot.integration.sms.SmsSendingService;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.geo.GeoLocationBroker;
 import za.org.grassroot.services.user.PasswordTokenService;
@@ -44,19 +44,19 @@ public class UserRestController {
     private final UserManagementService userManagementService;
     private final PasswordTokenService passwordTokenService;
     private final GeoLocationBroker geoLocationBroker;
-    private final SmsSendingService smsSendingService;
+    private final MessagingServiceBroker messagingServiceBroker;
     private final NotificationService notificationService;
     private final PermissionBroker permissionBroker;
     private final Environment environment;
 
     @Autowired
     public UserRestController(UserManagementService userManagementService, PasswordTokenService passwordTokenService,
-                              GeoLocationBroker geoLocationBroker, SmsSendingService smsSendingService, NotificationService notificationService,
+                              GeoLocationBroker geoLocationBroker, MessagingServiceBroker messagingServiceBroker, NotificationService notificationService,
                               PermissionBroker permissionBroker, Environment environment) {
         this.userManagementService = userManagementService;
         this.passwordTokenService = passwordTokenService;
         this.geoLocationBroker = geoLocationBroker;
-        this.smsSendingService = smsSendingService;
+        this.messagingServiceBroker = messagingServiceBroker;
         this.notificationService = notificationService;
         this.permissionBroker = permissionBroker;
         this.environment = environment;
@@ -84,7 +84,7 @@ public class UserRestController {
     public ResponseEntity<ResponseWrapper> resendOtp(@PathVariable("phoneNumber") String phoneNumber) {
         final String msisdn = PhoneNumberUtil.convertPhoneNumber(phoneNumber);
         try {
-            final String tokenCode = temporaryTokenSend(userManagementService.regenerateUserVerifier(phoneNumber), msisdn, true); // will be empty in production
+            final String tokenCode = temporaryTokenSend(userManagementService.regenerateUserVerifier(phoneNumber, true), msisdn, true); // will be empty in production
             return RestUtil.okayResponseWithData(RestMessage.VERIFICATION_TOKEN_SENT, tokenCode);
         } catch (Exception e) {
             log.info("here is the error : " + e.toString());
@@ -175,6 +175,32 @@ public class UserRestController {
         }
     }
 
+    @RequestMapping(value = "/auth/refresh/initiate/{phoneNumber}", method = RequestMethod.GET)
+    public ResponseEntity<ResponseWrapper> initiateTokenRefresh(@PathVariable String phoneNumber) {
+        try {
+            final String msisdn = PhoneNumberUtil.convertPhoneNumber(phoneNumber);
+            // this will send the token by SMS and return an empty string if in production, or return the token if on staging
+            String token = temporaryTokenSend(
+                    userManagementService.regenerateUserVerifier(msisdn, false), msisdn, false);
+            return RestUtil.okayResponseWithData(RestMessage.VERIFICATION_TOKEN_SENT, token);
+        } catch (InvalidPhoneNumberException|AccessDeniedException e) {
+            return RestUtil.errorResponse(HttpStatus.BAD_REQUEST, RestMessage.BAD_TOKEN_UPDATE);
+        }
+    }
+
+    @RequestMapping(value = "/auth/refresh/verify/{phoneNumber}", method = RequestMethod.GET)
+    public ResponseEntity<ResponseWrapper> verifyTokenRefresh(@PathVariable String phoneNumber,
+                                                              @RequestParam String otp) {
+        if (passwordTokenService.isShortLivedOtpValid(phoneNumber, otp)) {
+            User user = userManagementService.findByInputNumber(phoneNumber);
+            passwordTokenService.expireVerificationCode(user.getUid(), VerificationCodeType.SHORT_OTP);
+            VerificationTokenCode longLivedToken = passwordTokenService.generateLongLivedAuthCode(user.getUid());
+            return RestUtil.okayResponseWithData(RestMessage.LOGIN_SUCCESS, longLivedToken.getCode());
+        } else {
+            return RestUtil.errorResponse(HttpStatus.UNAUTHORIZED, RestMessage.INVALID_OTP);
+        }
+    }
+
     @RequestMapping(value = "/logout/{phoneNumber}/{code}", method = RequestMethod.GET)
     public ResponseEntity<ResponseWrapper> logoutUser(@PathVariable String phoneNumber, @PathVariable String code) {
         User user = userManagementService.findByInputNumber(phoneNumber);
@@ -244,7 +270,7 @@ public class UserRestController {
             if (token != null) {
                 // todo : wire up a message source for this
                 final String prefix = resending ? "Grassroot code (resent): " : "Grassroot code: ";
-                smsSendingService.sendPrioritySMS(prefix + token, destinationNumber);
+                messagingServiceBroker.sendPrioritySMS(prefix + token, destinationNumber);
             } else {
                 log.warn("Did not send verification message. No system messaging configuration found.");
             }

@@ -3,6 +3,9 @@ package za.org.grassroot.webapp.controller.rest;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.InjectMocks;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.jpa.domain.Specifications;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import za.org.grassroot.core.domain.EventLog;
 import za.org.grassroot.core.domain.EventReminderType;
@@ -12,12 +15,15 @@ import za.org.grassroot.core.dto.ResponseTotalsDTO;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.enums.EventRSVPResponse;
 import za.org.grassroot.core.enums.MeetingImportance;
+import za.org.grassroot.core.specifications.EventLogSpecifications;
+import za.org.grassroot.services.task.MeetingBuilderHelper;
 import za.org.grassroot.webapp.controller.rest.android.MeetingRestController;
 
 import java.time.format.DateTimeFormatter;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -29,6 +35,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 public class MeetingRestControllerTest extends RestAbstractUnitTest {
 
+    private static final Logger logger = LoggerFactory.getLogger(MeetingRestControllerTest.class);
+
     @InjectMocks
     private MeetingRestController meetingRestController;
 
@@ -36,20 +44,27 @@ public class MeetingRestControllerTest extends RestAbstractUnitTest {
 
     @Before
     public void setUp() {
-
         mockMvc = MockMvcBuilders.standaloneSetup(meetingRestController).build();
     }
 
     @Test
     public void creatingAMeetingShouldWork() throws Exception {
-
         Set<String> membersToAdd = new HashSet<>();
+        MeetingBuilderHelper helper = new MeetingBuilderHelper()
+                .userUid(sessionTestUser.getUid())
+                .startDateTime(testDateTime)
+                .parentUid(testGroup.getUid())
+                .parentType(JpaEntityType.GROUP)
+                .name(testEventTitle)
+                .description(testEventDescription)
+                .location(testEventLocation)
+                .reminderType(EventReminderType.GROUP_CONFIGURED)
+                .customReminderMinutes(-1)
+                .assignedMemberUids(membersToAdd);
 
         when(userManagementServiceMock.findByInputNumber(testUserPhone)).thenReturn(sessionTestUser);
-        when(eventBrokerMock.createMeeting(sessionTestUser.getUid(), testGroup.getUid(), JpaEntityType.GROUP,
-                                           testEventTitle, testDateTime, testEventLocation, false,
-                EventReminderType.GROUP_CONFIGURED, -1, testEventDescription, membersToAdd, MeetingImportance.ORDINARY))
-                .thenReturn(meetingEvent);
+        logger.debug("meetingHelperTest: {}", helper);
+        when(eventBrokerMock.createMeeting(helper)).thenReturn(meetingEvent);
 
         mockMvc.perform(post(path + "/create/{phoneNumber}/{code}/{parentUid}", testUserPhone, testUserCode, testGroup.getUid())
                                 .param("title", testEventTitle)
@@ -60,9 +75,7 @@ public class MeetingRestControllerTest extends RestAbstractUnitTest {
                 .andExpect(status().is2xxSuccessful());
 
         verify(userManagementServiceMock).findByInputNumber(testUserPhone);
-        verify(eventBrokerMock).createMeeting(sessionTestUser.getUid(), testGroup.getUid(), JpaEntityType.GROUP,
-                                              testEventTitle, testDateTime, testEventLocation, false,
-                EventReminderType.GROUP_CONFIGURED, -1, testEventDescription, membersToAdd, MeetingImportance.ORDINARY);
+        verify(eventBrokerMock).createMeeting(helper);
     }
 
     @Test
@@ -97,7 +110,7 @@ public class MeetingRestControllerTest extends RestAbstractUnitTest {
 
         when(userManagementServiceMock.findByInputNumber(testUserPhone)).thenReturn(sessionTestUser);
         when(eventBrokerMock.loadMeeting(meetingEvent.getUid())).thenReturn(meetingEvent);
-        when(eventLogRepositoryMock.findByEventAndUserAndEventLogType(meetingEvent, sessionTestUser, EventLogType.RSVP))
+        when(eventLogRepositoryMock.findOne(any(Specifications.class)))
                 .thenReturn(new EventLog(sessionTestUser, meetingEvent, EventLogType.RSVP, EventRSVPResponse.YES));
         when(eventLogBrokerMock.hasUserRespondedToEvent(meetingEvent, sessionTestUser)).thenReturn(false);
         when(eventLogBrokerMock.getResponseCountForEvent(meetingEvent)).thenReturn(testResponseTotalsDTO);
@@ -105,7 +118,7 @@ public class MeetingRestControllerTest extends RestAbstractUnitTest {
                 .andExpect(status().is2xxSuccessful());
         verify(userManagementServiceMock).findByInputNumber(testUserPhone);
         verify(eventBrokerMock).loadMeeting(meetingEvent.getUid());
-        verify(eventLogRepositoryMock).findByEventAndUserAndEventLogType(meetingEvent, sessionTestUser, EventLogType.RSVP);
+        verify(eventLogRepositoryMock).findOne(any(Specifications.class));
         verify(eventLogBrokerMock).getResponseCountForEvent(meetingEvent);
 
     }

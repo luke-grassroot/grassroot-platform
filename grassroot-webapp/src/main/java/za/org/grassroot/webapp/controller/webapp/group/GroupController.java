@@ -95,6 +95,10 @@ public class GroupController extends BaseController {
         Set<Permission> userPermissions = group.getMembership(user).getRole().getPermissions();
 
         model.addAttribute("group", group);
+
+        model.addAttribute("alias", group.getMembership(user).getAlias());
+        model.addAttribute("displayName", group.getMembership(user).getDisplayName());
+
         model.addAttribute("reminderOptions", reminderMinuteOptions(true));
         model.addAttribute("hasParent", (group.getParent() != null));
 
@@ -156,6 +160,15 @@ public class GroupController extends BaseController {
     SECTION: Methods for handling group modification
      */
 
+    @RequestMapping(value = "alias", method = RequestMethod.POST)
+    public String setGroupAlias(@RequestParam String groupUid, @RequestParam String alias,
+                                RedirectAttributes attributes, HttpServletRequest request) {
+        groupBroker.updateMemberAlias(getUserProfile().getUid(), groupUid, alias);
+        addMessage(attributes, MessageType.SUCCESS, "group.member.alias.done", new String[] { alias }, request);
+        attributes.addAttribute("groupUid", groupUid);
+        return "redirect:/group/view";
+    }
+
     @RequestMapping(value = "remove", method = RequestMethod.POST)
     public String removeMember(Model model, @RequestParam String groupUid, @RequestParam String msisdn, HttpServletRequest request) {
         Set<String> memberToRemove = Sets.newHashSet(userManagementService.findByInputNumber(msisdn).getUid());
@@ -165,23 +178,24 @@ public class GroupController extends BaseController {
     }
 
     @RequestMapping(value = "addmember", method = RequestMethod.POST)
-    public String addMember(Model model, @RequestParam String groupUid, @RequestParam String phoneNumber,
-                            @RequestParam String displayName, @RequestParam String roleName, HttpServletRequest request) {
+    public String addMember(@RequestParam String groupUid, @RequestParam String phoneNumber,
+                            @RequestParam String displayName, @RequestParam String roleName,
+                            RedirectAttributes attributes, HttpServletRequest request) {
         // note : we validate client side, on length & only chars, but need to check again for slip throughs (e.g., right digits, non-existent network)
         if (PhoneNumberUtil.testInputNumber(phoneNumber)) {
             MembershipInfo newMember = new MembershipInfo(phoneNumber, roleName, displayName);
             try {
                 groupBroker.addMembers(getUserProfile().getUid(), groupUid, Sets.newHashSet(newMember), false);
-                addMessage(model, MessageType.SUCCESS, "group.addmember.success", request);
+                addMessage(attributes, MessageType.SUCCESS, "group.addmember.success", request);
             } catch (GroupSizeLimitExceededException e) {
-                // todo : redirect to the account page?
-                addMessage(model, MessageType.ERROR, "group.addmember.limit", request);
+                addMessage(attributes, MessageType.ERROR, "group.addmember.limit", request);
             }
         } else {
-            addMessage(model, MessageType.ERROR, "user.enter.error.phoneNumber.invalid", request);
+            addMessage(attributes, MessageType.ERROR, "user.enter.error.phoneNumber.invalid", request);
         }
 
-        return viewGroupIndex(model, groupUid);
+        attributes.addAttribute("groupUid", groupUid);
+        return "redirect:/group/view";
     }
 
     @RequestMapping(value = "rename_member", method = RequestMethod.POST)

@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 @Configuration
 @ControllerAdvice
 public class MVCConfig extends WebMvcConfigurerAdapter {
+
     private PasswordTokenService passwordTokenService;
 
     @Bean
@@ -78,7 +79,8 @@ public class MVCConfig extends WebMvcConfigurerAdapter {
                 .addPathPatterns("/api/meeting/**")
                 .addPathPatterns("/api/notification")
                 .excludePathPatterns("/api/group/search")
-                .excludePathPatterns("/api/language/test/**");
+                .excludePathPatterns("/api/language/test/**")
+                .excludePathPatterns("/api/jwt/public/credentials");
     }
 
     @Override

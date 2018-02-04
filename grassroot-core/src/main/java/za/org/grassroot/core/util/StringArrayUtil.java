@@ -18,12 +18,15 @@ public class StringArrayUtil {
     }
 
     public static String[] listToArrayRemoveDuplicates(List<String> list) {
+        if (list == null) {
+            return new String[0];
+        }
         LinkedHashSet<String> set = new LinkedHashSet<>(list);
         return listToArray(new ArrayList<>(set));
     }
 
     public static List<String> arrayToList(String[] array) {
-        return array != null ? Arrays.asList(array) : new ArrayList<>();
+        return array != null && array.length != 0 ? new ArrayList<>(Arrays.asList(array)) : new ArrayList<>();
     }
 
     public static String joinStringList(List<String> strings, String joinChar, Integer maxLength) {

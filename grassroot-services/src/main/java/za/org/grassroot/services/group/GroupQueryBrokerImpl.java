@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specifications;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -14,12 +15,13 @@ import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.domain.geo.GeoLocation;
 import za.org.grassroot.core.domain.geo.GroupLocation;
 import za.org.grassroot.core.domain.geo.PreviousPeriodUserLocation;
-import za.org.grassroot.core.domain.EventLog;
-import za.org.grassroot.core.domain.GroupLog;
-import za.org.grassroot.core.dto.GroupTreeDTO;
+import za.org.grassroot.core.domain.task.Event;
+import za.org.grassroot.core.domain.task.EventLog;
+import za.org.grassroot.core.dto.MembershipDTO;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.repository.*;
 import za.org.grassroot.core.specifications.GroupSpecifications;
+import za.org.grassroot.core.specifications.MembershipSpecifications;
 import za.org.grassroot.core.specifications.PaidGroupSpecifications;
 import za.org.grassroot.services.ChangedSinceData;
 import za.org.grassroot.services.PermissionBroker;
@@ -41,7 +43,6 @@ import static za.org.grassroot.core.util.DateTimeUtil.getSAST;
 
 /**
  * Created by luke on 2016/09/28.
- * major todo: clean up now that these are in a more manageable dedicated interface
  */
 @Service
 public class GroupQueryBrokerImpl implements GroupQueryBroker {
@@ -79,6 +80,9 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     @Autowired
     private PermissionBroker permissionBroker;
 
+    @Autowired
+    private MembershipRepository membershipRepository;
+
     @Override
     @Transactional(readOnly = true)
     public Group load(String groupUid) {
@@ -110,6 +114,7 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
         }
         return results;
     }
+
 
     @Override
     @Transactional(readOnly = true)
@@ -159,17 +164,6 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     public Set<Group> subGroups(String groupUid) {
         Group group = groupRepository.findOneByUid(groupUid);
         return new HashSet<>(groupRepository.findAll(Specifications.where(hasParent(group)).and(isActive())));
-    }
-
-    @Transactional(readOnly = true)
-    public List<GroupTreeDTO> groupTree(String userUid) {
-        User user = userRepository.findOneByUid(userUid);
-        List<Object[]> listObjArray = groupRepository.getGroupMemberTree(user.getId());
-        List<GroupTreeDTO> list = new ArrayList<>();
-        for (Object[] objArray : listObjArray) {
-            list.add(new GroupTreeDTO(objArray));
-        }
-        return list;
     }
 
     @Override
@@ -222,12 +216,12 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     @Transactional(readOnly = true)
     public ChangedSinceData<Group> getActiveGroups(User user, Instant changedSince) {
         Objects.requireNonNull(user, "User cannot be null");
-        List<Group> activeGroups = groupRepository.findByMembershipsUserAndActiveTrue(user);
+        List<Group> activeGroups = groupRepository.findByMembershipsUserAndActiveTrueAndParentIsNull(user);
         // here we put all those groups that have been satisfying query above, but not anymore since 'changedSince' moment
         Set<String> removedUids = new HashSet<>();
         if (changedSince != null) {
             List<Group> deactivatedAfter = groupRepository.findMemberGroupsDeactivatedAfter(user, changedSince);
-            List<Group> formerMembersGroups = groupRepository.findMembershipRemovedAfter(user.getId(), changedSince);
+            List<Group> formerMembersGroups = groupRepository.findMembershipRemovedAfter(user, changedSince);
             removedUids = Stream.concat(deactivatedAfter.stream(), formerMembersGroups.stream())
                     .map(Group::getUid)
                     .collect(Collectors.toSet());
@@ -247,7 +241,6 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     @Override
     @Transactional(readOnly = true)
     public List<LocalDate> getMonthsGroupActive(String groupUid) {
-        // todo: make this somewhat more sophisticated, including checking for active/inactive months, paid months etc
         Group group = groupRepository.findOneByUid(groupUid);
         LocalDate groupStartDate = LocalDateTime.ofInstant(group.getCreatedDateTime(), getSAST()).toLocalDate();
         LocalDate today = LocalDate.now();
@@ -263,7 +256,7 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     @Override
     @Transactional(readOnly = true)
     public List<GroupLog> getLogsForGroup(Group group, LocalDateTime periodStart, LocalDateTime periodEnd) {
-        Sort sort = new Sort(Sort.Direction.ASC, "CreatedDateTime");
+        Sort sort = new Sort(Sort.Direction.DESC, "CreatedDateTime");
         return groupLogRepository.findByGroupAndCreatedDateTimeBetween(group, convertToSystemTime(periodStart, getSAST()),
                 convertToSystemTime(periodEnd, getSAST()), sort);
     }
@@ -282,7 +275,7 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
     @Override
     @Transactional(readOnly = true)
     public Page<Group> fetchUserCreatedGroups(User user, int pageNumber, int pageSize) {
-        Objects.nonNull(user);
+        Objects.requireNonNull(user);
         return groupRepository.findByCreatedByUserAndActiveTrueOrderByCreatedDateTimeDesc(user, new PageRequest(pageNumber, pageSize));
     }
 
@@ -402,6 +395,19 @@ public class GroupQueryBrokerImpl implements GroupQueryBroker {
         } else {
             return radiusDefinition;
         }
+    }
+
+
+    @Override
+    public long countMembershipsInGroups(User groupCreator, Instant groupCreatedAfter, Instant userJoinedAfter) {
+        return membershipRepository.count(MembershipSpecifications.membershipsInGroups(groupCreator, groupCreatedAfter, userJoinedAfter));
+    }
+
+    @Override
+    public Page<MembershipDTO> getMembershipsInGroups(User groupCreator, Instant groupCreatedAfter, Instant userJoinedAfter, Pageable pageable) {
+        Page<Membership> page = membershipRepository.findAll(MembershipSpecifications.membershipsInGroups(groupCreator, groupCreatedAfter, userJoinedAfter), pageable);
+        return page.map(MembershipDTO::new);
+
     }
 
 

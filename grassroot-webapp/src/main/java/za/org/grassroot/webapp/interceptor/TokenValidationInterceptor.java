@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.servlet.HandlerMapping;
 import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;
 import za.org.grassroot.core.domain.VerificationTokenCode;
@@ -24,7 +26,6 @@ import java.util.Map;
 /**
  * Created by paballo on 2016/03/15.
  */
-
 public class TokenValidationInterceptor extends HandlerInterceptorAdapter {
 
     private PasswordTokenService passwordTokenService;
@@ -34,6 +35,9 @@ public class TokenValidationInterceptor extends HandlerInterceptorAdapter {
     private static final Logger log = LoggerFactory.getLogger(TokenValidationInterceptor.class);
 
     private static final String contentType = "application/json";
+
+    @Autowired
+    private Environment environment;
 
     @Autowired
     public void setPasswordTokenService(PasswordTokenService passwordTokenService) {
@@ -49,6 +53,9 @@ public class TokenValidationInterceptor extends HandlerInterceptorAdapter {
     public boolean preHandle(HttpServletRequest request,
                              HttpServletResponse response, Object handler) throws Exception {
 
+        if (request.getMethod().equalsIgnoreCase(RequestMethod.OPTIONS.toString()))
+            return true;
+
         AuthorizationHeader authorizationHeader = new AuthorizationHeader(request);
 
         boolean isTokenExpired = false;
@@ -61,8 +68,8 @@ public class TokenValidationInterceptor extends HandlerInterceptorAdapter {
             isTokenExpired = true;
         } else if(authorizationHeader.doesNotHaveBearerToken()) {
             Map pathVariables = (Map) request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
-            String phoneNumber = String.valueOf(pathVariables.get("phoneNumber")).trim();
-            String code = String.valueOf(pathVariables.get("code")).trim();
+            String phoneNumber = pathVariables.containsKey("phoneNumber") ? String.valueOf(pathVariables.get("phoneNumber")).trim() : null;
+            String code = pathVariables.containsKey("code") ? String.valueOf(pathVariables.get("code")).trim() : null;
             if (passwordTokenService.isLongLiveAuthValid(phoneNumber, code)) {
                 return true;
             } else {

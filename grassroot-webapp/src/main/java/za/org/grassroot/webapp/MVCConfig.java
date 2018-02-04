@@ -11,10 +11,7 @@ import org.springframework.http.CacheControl;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.filter.CharacterEncodingFilter;
 import org.springframework.web.servlet.LocaleResolver;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
-import org.springframework.web.servlet.config.annotation.ViewControllerRegistry;
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurerAdapter;
+import org.springframework.web.servlet.config.annotation.*;
 import org.springframework.web.servlet.i18n.LocaleChangeInterceptor;
 import org.springframework.web.servlet.i18n.SessionLocaleResolver;
 import org.thymeleaf.extras.java8time.dialect.Java8TimeDialect;
@@ -67,6 +64,18 @@ public class MVCConfig extends WebMvcConfigurerAdapter {
     @Bean
     public SimpleLoggingInterceptor loggingInterceptor(){return  new SimpleLoggingInterceptor();}
 
+
+    @Bean
+    public WebMvcConfigurer corsConfigurer() {
+        return new WebMvcConfigurerAdapter() {
+            @Override
+            public void addCorsMappings(CorsRegistry registry) {
+                registry.addMapping("/**").allowedOrigins("*").allowedMethods("*");
+            }
+        };
+    }
+
+
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(localeChangeInterceptor());
@@ -79,6 +88,8 @@ public class MVCConfig extends WebMvcConfigurerAdapter {
                 .addPathPatterns("/api/meeting/**")
                 .addPathPatterns("/api/notification")
                 .excludePathPatterns("/api/group/search")
+                .excludePathPatterns("/api/group/fetch/flyer")
+                .excludePathPatterns("/api/group/outside/join/**")
                 .excludePathPatterns("/api/language/test/**")
                 .excludePathPatterns("/api/jwt/public/credentials");
     }

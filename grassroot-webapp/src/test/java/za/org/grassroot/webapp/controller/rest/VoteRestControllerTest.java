@@ -8,14 +8,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.jpa.domain.Specifications;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import za.org.grassroot.core.domain.EventLog;
+import za.org.grassroot.core.domain.BaseRoles;
+import za.org.grassroot.core.domain.GroupJoinMethod;
 import za.org.grassroot.core.domain.JpaEntityType;
-import za.org.grassroot.core.domain.Role;
+import za.org.grassroot.core.domain.task.EventLog;
+import za.org.grassroot.core.domain.task.Vote;
 import za.org.grassroot.core.dto.ResponseTotalsDTO;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.enums.EventRSVPResponse;
 import za.org.grassroot.services.task.VoteBroker;
-import za.org.grassroot.webapp.controller.rest.android.VoteRestController;
+import za.org.grassroot.webapp.controller.android1.VoteRestController;
 
 import java.util.Collections;
 
@@ -47,8 +49,11 @@ public class VoteRestControllerTest extends RestAbstractUnitTest {
         mockMvc = MockMvcBuilders.standaloneSetup(voteRestController).build();
     }
 
+    private Vote voteEvent = createVote(null);
+
     @Test
     public void creatingAVoteShouldWork() throws Exception {
+
 
         when(userManagementServiceMock.findByInputNumber(testUserPhone)).thenReturn(sessionTestUser);
 
@@ -76,7 +81,7 @@ public class VoteRestControllerTest extends RestAbstractUnitTest {
     @Test
     public void viewingAVoteShouldWork() throws Exception {
 
-        testGroup.addMember(sessionTestUser, new Role("ROLE_GROUP_ORGANIZER", testGroup.getUid()));
+        testGroup.addMember(sessionTestUser, BaseRoles.ROLE_GROUP_ORGANIZER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
         EventLog eventLog = new EventLog(sessionTestUser, voteEvent, EventLogType.RSVP, EventRSVPResponse.YES);
         ResponseTotalsDTO rsvpTotalsDTO = ResponseTotalsDTO.makeForTest(1, 2, 3, 4, 5);
 
@@ -90,7 +95,7 @@ public class VoteRestControllerTest extends RestAbstractUnitTest {
 
         verify(userManagementServiceMock).findByInputNumber(testUserPhone);
         verify(voteBrokerMock).load(voteEvent.getUid());
-        verify(voteBrokerMock).fetchVoteResults(sessionTestUser.getUid(), voteEvent.getUid());
+        verify(voteBrokerMock).fetchVoteResults(sessionTestUser.getUid(), voteEvent.getUid(), false);
         verify(eventLogRepositoryMock).findOne(any(Specifications.class));
     }
 

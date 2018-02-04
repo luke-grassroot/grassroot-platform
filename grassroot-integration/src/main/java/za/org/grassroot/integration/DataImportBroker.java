@@ -10,10 +10,10 @@ import java.util.List;
  */
 public interface DataImportBroker {
 
-    // todo: error throwing etc
     List<String> extractFirstRowOfCells(File file);
 
-    List<MembershipInfo> processMembers(File file, Integer phoneColumn, Integer nameColumn, Integer roleColumn, boolean headerRow);
+    List<MembershipInfo> processMembers(File file, boolean headerRow, Integer phoneColumn, Integer nameColumn,
+                                        Integer roleColumn, Integer emailCol, Integer provinceCol);
 
     List<String> extractFirstColumnOfSheet(File file);
 

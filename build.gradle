@@ -1,12 +1,12 @@
 allprojects  {
   apply plugin: 'maven'
   group = 'za.org.grassroot'
-  version = '1.0.0.RC1'
+  version = '1.1.1.6'
 }
 
 ext.libs = [
-        springVersion: '4.3.9.RELEASE',
-        springBootVersion: '1.5.4.RELEASE',
+        springVersion: '4.3.13.RELEASE',
+        springBootVersion: '1.5.9.RELEASE',
         springSecurityVersion: '4.2.3.RELEASE',
         thymeleafVersion: '3.0.0.RELEASE',
         jacksonVersion: '2.8.7'
@@ -23,9 +23,12 @@ subprojects {
   repositories {
     mavenLocal()
     maven { url "http://repo.maven.apache.org/maven2" }
+    maven {
+      url "http://optimizely.bintray.com/optimizely"
+    }
   }
 
-  test { // major todo : rewire integration tests
+  test {
     exclude '**/*IT*'
     testLogging {
       events "failed"
@@ -38,8 +41,11 @@ subprojects {
   }
   
   dependencies {
-
     compile group: 'com.google.guava', name: 'guava', version:'19.0'
+    compile group: 'io.springfox', name: 'springfox-swagger2', version: '2.7.0'
+    compile group: 'io.springfox', name: 'springfox-swagger-ui', version: '2.7.0'
+
+    compile group: 'org.projectlombok', name: 'lombok', version: '1.16.18'
 
     testCompile group: 'org.springframework', name: 'spring-test', version:libs.springVersion
     testCompile group: 'junit', name: 'junit', version:'4.12'

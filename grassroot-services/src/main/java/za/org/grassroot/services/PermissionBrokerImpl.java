@@ -1,5 +1,6 @@
 package za.org.grassroot.services;
 
+import com.codahale.metrics.annotation.Timed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,14 +21,11 @@ public class PermissionBrokerImpl implements PermissionBroker {
 
     private static final Logger log = LoggerFactory.getLogger(PermissionBrokerImpl.class);
 
-    @Autowired
-    private GroupRepository groupRepository;
+    private final GroupRepository groupRepository;
 
-    @Autowired
-    private RoleRepository roleRepository;
+    private final RoleRepository roleRepository;
 
-    @Autowired
-    private EntityManager entityManager;
+    private final EntityManager entityManager;
 
     private static final Set<Permission> defaultOrdinaryMemberPermissions =
             constructPermissionSet(Collections.emptySet(),
@@ -97,8 +95,15 @@ public class PermissionBrokerImpl implements PermissionBroker {
                     Permission.GROUP_PERMISSION_CHANGE_PERMISSION_TEMPLATE,
                     Permission.GROUP_PERMISSION_FORCE_PERMISSION_CHANGE);
 
+    @Autowired
+    public PermissionBrokerImpl(GroupRepository groupRepository, RoleRepository roleRepository, EntityManager entityManager) {
+        this.groupRepository = groupRepository;
+        this.roleRepository = roleRepository;
+        this.entityManager = entityManager;
+    }
 
-    private static final Set<Permission> constructPermissionSet(Set<Permission> baseSet, Permission... permissions) {
+
+    private static Set<Permission> constructPermissionSet(Set<Permission> baseSet, Permission... permissions) {
         Set<Permission> set = new HashSet<>();
         set.addAll(baseSet);
         Collections.addAll(set, permissions);
@@ -142,7 +147,7 @@ public class PermissionBrokerImpl implements PermissionBroker {
                 member.setPermissions(defaultOrdinaryMemberPermissions);
                 break;
             case CLOSED_GROUP:
-                log.info("setting permissions for closed group ... looks like = {}", closedGroupOrganizerPermissions.toString());
+                log.trace("setting permissions for closed group ... looks like = {}", closedGroupOrganizerPermissions.toString());
                 organizer.setPermissions(closedGroupOrganizerPermissions);
                 committee.setPermissions(closedCommitteeMemberPermissions);
                 member.setPermissions(closedOrdinaryMemberPermissions);
@@ -202,6 +207,7 @@ public class PermissionBrokerImpl implements PermissionBroker {
 
     @Override
     @Transactional(readOnly = true)
+    @Timed
     @SuppressWarnings("unchecked")
     public List<Group> getActiveGroupsSorted(User user, Permission requiredPermission) {
         Query resultQuery = requiredPermission == null ?

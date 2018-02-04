@@ -2,7 +2,6 @@ package za.org.grassroot.core.repository;
 
 /**
  * Created by luke on 2015/07/16.
- * todo : flip several of these over to specifications
  */
 
 import org.springframework.data.domain.Page;
@@ -17,10 +16,13 @@ import za.org.grassroot.core.domain.User;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 
 public interface GroupRepository extends JpaRepository<Group, Long>, JpaSpecificationExecutor<Group> {
 
     Group findOneByUid(String uid);
+
+    Set<Group> findByUidIn(Set<String> uids);
 
     /*
     Find the last group created by a specific user
@@ -29,7 +31,7 @@ public interface GroupRepository extends JpaRepository<Group, Long>, JpaSpecific
     Group findFirstByCreatedByUserAndGroupNameAndCreatedDateTimeAfterAndActiveTrue(User createdByUser, String groupName, Instant createdSince);
 
     // Find all the groups that a user is part of, with pagination
-    List<Group> findByMembershipsUserAndActiveTrue(User user);
+    List<Group> findByMembershipsUserAndActiveTrueAndParentIsNull(User user);
     List<Group> findByCreatedByUserAndActiveTrueOrderByCreatedDateTimeDesc(User user);
     Page<Group> findByCreatedByUserAndActiveTrueOrderByCreatedDateTimeDesc(User user, Pageable pageable);
 
@@ -71,13 +73,6 @@ public interface GroupRepository extends JpaRepository<Group, Long>, JpaSpecific
             "where g.active = true and m.user_id = ?1 and to_tsvector('english', g.name) @@ to_tsquery('english', ?2)",
             nativeQuery = true)
     List<Group> findByActiveAndMembershipsUserWithNameContainsText(Long userId, String nameTsQuery);
-
-    /*
-    Find the max(groupTokenCode) in table
-    N.B. remove this when we stop using integer values
-     */
-    @Query(value = "SELECT COALESCE(MAX(CAST(group_token_code as INTEGER)),123) FROM group_profile g WHERE group_token_code NOT LIKE ''", nativeQuery = true)
-    int getMaxTokenValue();
     
     @Query(value = "select groupTokenCode from Group")
     List<String> findAllTokenCodes();
@@ -103,8 +98,8 @@ public interface GroupRepository extends JpaRepository<Group, Long>, JpaSpecific
     @Query("select g from GroupLog gl inner join gl.group g inner join g.memberships m WHERE gl.groupLogType = 'GROUP_REMOVED' and gl.createdDateTime >= ?2 and m.user = ?1")
     List<Group> findMemberGroupsDeactivatedAfter(User member, Instant time);
 
-    @Query("SELECT g from GroupLog gl inner join gl.group g WHERE gl.groupLogType = 'GROUP_MEMBER_REMOVED' and gl.auxiliaryId = ?1 AND gl.createdDateTime >= ?2")
-    List<Group> findMembershipRemovedAfter(Long formerMemberId, Instant time);
+    @Query("SELECT g from GroupLog gl inner join gl.group g WHERE gl.groupLogType = 'GROUP_MEMBER_REMOVED' and gl.targetUser = ?1 AND gl.createdDateTime >= ?2")
+    List<Group> findMembershipRemovedAfter(User formerMember, Instant time);
 
     @Query(value = "select count(*) from Group g " +
             "inner join g.memberships m " +

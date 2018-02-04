@@ -148,7 +148,8 @@ public class GroupJoinRequestManager implements GroupJoinRequestService {
 
         MembershipInfo membershipInfo =
                 new MembershipInfo(requestingUser.getPhoneNumber(), BaseRoles.ROLE_ORDINARY_MEMBER, requestingUser.getDisplayName());
-        groupBroker.addMembers(userUid, groupToJoin.getUid(), Sets.newHashSet(membershipInfo), false);
+        groupBroker.addMembers(userUid, groupToJoin.getUid(), Sets.newHashSet(membershipInfo),
+                GroupJoinMethod.SELF_JOINED, false);
 
         // there is a little duplication here as the group broker also creates a group log, but the notification needs a log
         // and better to duplicate as a different kind than to have duplicate / overlapping group logs
@@ -254,6 +255,19 @@ public class GroupJoinRequestManager implements GroupJoinRequestService {
         Sort sort = new Sort(Sort.Direction.DESC, "creationTime");
         User user = userRepository.findOneByUid(userUid);
         return groupJoinRequestRepository.findByGroupJoinApproverAndStatus(user, AssocRequestStatus.PENDING, sort);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<GroupJoinRequest> getPendingRequestsForGroup(String userUid, String groupUid) {
+        User user = userRepository.findOneByUid(userUid);
+        Group group = groupRepository.findOneByUid(groupUid);
+
+        if (!group.getMembers().contains(user)) {
+            throw new AccessDeniedException("Only users can see requests in group");
+        }
+
+        return groupJoinRequestRepository.findByGroupAndStatus(group, AssocRequestStatus.PENDING);
     }
 
     @Override

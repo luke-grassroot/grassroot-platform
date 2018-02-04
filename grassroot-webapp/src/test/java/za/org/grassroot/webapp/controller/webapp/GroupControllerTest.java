@@ -4,16 +4,17 @@ import com.google.common.collect.Sets;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.InjectMocks;
+import org.mockito.Mock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import za.org.grassroot.core.domain.*;
-import za.org.grassroot.core.domain.EventLog;
-import za.org.grassroot.core.domain.GroupLog;
+import za.org.grassroot.core.domain.task.*;
 import za.org.grassroot.core.dto.MembershipInfo;
-import za.org.grassroot.core.dto.TaskDTO;
+import za.org.grassroot.core.dto.task.TaskDTO;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.enums.GroupLogType;
 import za.org.grassroot.core.util.DateTimeUtil;
+import za.org.grassroot.integration.PdfGeneratingService;
 import za.org.grassroot.webapp.controller.BaseController;
 import za.org.grassroot.webapp.controller.webapp.group.GroupController;
 import za.org.grassroot.webapp.model.web.MemberWrapperList;
@@ -28,6 +29,7 @@ import java.util.*;
 import static java.time.temporal.TemporalAdjusters.firstDayOfMonth;
 import static java.time.temporal.TemporalAdjusters.lastDayOfMonth;
 import static org.hamcrest.Matchers.*;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -41,6 +43,9 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     private static final Logger logger = LoggerFactory.getLogger(MeetingControllerTest.class);
 
+    @Mock
+    private PdfGeneratingService generatingService;
+
     @InjectMocks
     private GroupController groupController;
 
@@ -51,10 +56,10 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void viewGroupIndexWorks() throws Exception {
-        Group dummyGroup = new Group("Dummy Group2", new User("234345345"));
-        Group dummySubGroup = new Group("Dummy Group3", new User("234345345"));
+        Group dummyGroup = new Group("Dummy Group2", new User("234345345", null, null));
+        Group dummySubGroup = new Group("Dummy Group3", new User("234345345", null, null));
 
-        dummyGroup.addMember(sessionTestUser);
+        dummyGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
         Set<Group> subGroups = Collections.singleton(dummySubGroup);
 
         TaskDTO dummyTask = null;
@@ -74,6 +79,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
         when(groupBrokerMock.isDeactivationAvailable(sessionTestUser, dummyGroup, true)).thenReturn(true);
         when(groupQueryBrokerMock.getLastTimeGroupActiveOrModified(dummyGroup.getUid())).thenReturn(LocalDateTime.now());
 
+        when(generatingService.availableLanguages()).thenReturn(Arrays.asList(new Locale("en")));
+
         mockMvc.perform(get("/group/view").param("groupUid", dummyGroup.getUid())).
                 andExpect(view().name("group/view")).
                 andExpect(model().attribute("group", hasProperty("groupName", is("Dummy Group2")))).
@@ -90,8 +97,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void modifyGroupWorks() throws Exception {
-        Group dummyGroup = new Group("Dummy Group", new User("234345345"));
-        dummyGroup.addMember(sessionTestUser);
+        Group dummyGroup = new Group("Dummy Group", new User("234345345", null, null));
+        dummyGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(userManagementServiceMock.load(sessionTestUser.getUid())).thenReturn(sessionTestUser);
         when(groupBrokerMock.load(dummyGroup.getUid())).thenReturn(dummyGroup);
@@ -136,8 +143,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void newTokenWorks() throws Exception {
-        Group testGroup = new Group("Dummy Group", new User("234345345"));
-        testGroup.addMember(sessionTestUser);
+        Group testGroup = new Group("Dummy Group", new User("234345345", null, null));
+        testGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(userManagementServiceMock.load(sessionTestUser.getUid())).thenReturn(sessionTestUser);
         when(groupBrokerMock.load(testGroup.getUid())).thenReturn(testGroup);
@@ -153,8 +160,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void closeTokenWorks() throws Exception {
-        Group group = new Group("someGroupname", new User("234345345"));
-        group.addMember(sessionTestUser);
+        Group group = new Group("someGroupname", new User("234345345", null, null));
+        group.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
         group.setGroupTokenCode("12345");
         group.setTokenExpiryDateTime(DateTimeUtil.convertToSystemTime(LocalDateTime.now().plusYears(1L), DateTimeUtil.getSAST()));
 
@@ -173,8 +180,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void listPossibleParentsWorks() throws Exception {
 
-        Group testChildGroup = new Group("someGroup", new User("234345345"));
-        Group testParentGroup = new Group("someParent", new User("234345345"));
+        Group testChildGroup = new Group("someGroup", new User("234345345", null, null));
+        Group testParentGroup = new Group("someParent", new User("234345345", null, null));
         Group floatingGroup = new Group("some other group", sessionTestUser);
         testChildGroup.setParent(testParentGroup);
         Set<Group> possibleParent = Collections.singleton(testParentGroup);
@@ -204,9 +211,9 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void linkToParentWorks() throws Exception {
-        Group testGroup = new Group("someGroupname", new User("234345345"));
+        Group testGroup = new Group("someGroupname", new User("234345345", null, null));
 
-        Group testParent = new Group("someParentGroup", new User("234345345"));
+        Group testParent = new Group("someParentGroup", new User("234345345", null, null));
         when(groupBrokerMock.load(testGroup.getUid())).thenReturn(testGroup);
         when(groupBrokerMock.load(testParent.getUid())).thenReturn(testParent);
         mockMvc.perform(post("/group/link").param("groupUid", testGroup.getUid()).param("parentUid", testParent.getUid()))
@@ -222,7 +229,7 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void selectConsolidateWorksWhenMergeCandidateHasEntries() throws Exception {
 
-        Group testGroup = new Group("Dummy Group2", new User("234345345"));
+        Group testGroup = new Group("Dummy Group2", new User("234345345", null, null));
         Group candidate = new Group("dummy testGroup", sessionTestUser);
         Set<Group> testCandidateGroups = Collections.singleton(candidate);
 
@@ -266,9 +273,9 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void consolidateGroupConfirmWorks() throws Exception {
 
-        Group testGroupSmall = new Group("someGroupnameSmall", new User("234345345"));
-        Group testGroupLarge = new Group("someGroupnameLarge", new User("234345345"));
-        testGroupLarge.addMember(sessionTestUser);
+        Group testGroupSmall = new Group("someGroupnameSmall", new User("234345345", null, null));
+        Group testGroupLarge = new Group("someGroupnameLarge", new User("234345345", null, null));
+        testGroupLarge.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         String[] orderedUids = {testGroupSmall.getUid(), testGroupLarge.getUid()};
         String[] orders = {"small_to_large", "1_into_2", "2_into_1"};
@@ -299,11 +306,11 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void groupsConsolidateDoWorks() throws Exception {
-        Group testGroupInto = new Group("someGroupname", new User("234345345"));
-        testGroupInto.addMember(new User("100001"));
+        Group testGroupInto = new Group("someGroupname", new User("234345345", null, null));
+        testGroupInto.addMember(new User("100001", null, null), BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
-        Group testGroupFrom = new Group("someGroupname2", new User("234345345"));
-        testGroupFrom.addMember(sessionTestUser);
+        Group testGroupFrom = new Group("someGroupname2", new User("234345345", null, null));
+        testGroupFrom.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(groupBrokerMock.load(testGroupFrom.getUid())).thenReturn(testGroupFrom);
         when(groupBrokerMock.merge(sessionTestUser.getUid(), testGroupInto.getUid(), testGroupFrom.getUid(), true, true, false, null))
@@ -324,7 +331,7 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void deleteGroupWorksWithConfirmFieldValueValid() throws Exception {
-        Group group = new Group("someGroupname", new User("234345345"));
+        Group group = new Group("someGroupname", new User("234345345", null, null));
 
         when(groupBrokerMock.load(group.getUid())).thenReturn(group);
         when(groupBrokerMock.isDeactivationAvailable(sessionTestUser, group, true)).thenReturn(true);
@@ -344,7 +351,7 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     public void deleteGroupWorksWithConfirmFieldValueInvalid() throws Exception {
 
         Group group = new Group("someGroupname", sessionTestUser);
-        group.addMember(sessionTestUser);
+        group.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(groupBrokerMock.load(group.getUid())).thenReturn(group);
         when(groupBrokerMock.isDeactivationAvailable(sessionTestUser, group, true)).thenReturn(true);
@@ -363,8 +370,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
     @Test
     public void unSubgroupWorks() throws Exception {
-        Group testGroup = new Group("Dummy Group2", new User("234345345"));
-        testGroup.addMember(sessionTestUser);
+        Group testGroup = new Group("Dummy Group2", new User("234345345", null, null));
+        testGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(groupBrokerMock.load(testGroup.getUid())).thenReturn(testGroup);
 
@@ -381,23 +388,28 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void groupHistoryThisMonthShouldWork() throws Exception {
 
-        Group testGroup = new Group("someGroupname", new User("234345345"));
-        testGroup.addMember(sessionTestUser);
+        Group testGroup = new Group("someGroupname", new User("234345345", null, null));
+        testGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         List<Event> dummyEvents = Arrays.asList(
                 new MeetingBuilder().setName("someMeeting").setStartDateTime(Instant.now()).setUser(sessionTestUser).setParent(testGroup).setEventLocation("someLoc").createMeeting(),
                 new Vote("someMeeting", Instant.now(), sessionTestUser, testGroup));
         EventLog dummyLog = new EventLog(sessionTestUser, dummyEvents.get(0), EventLogType.RSVP);
 
-        List<Todo> dummyTodos = Arrays.asList(new Todo(sessionTestUser, testGroup, "Do stuff", LocalDateTime.now().plusDays(2L).toInstant(ZoneOffset.ofHours(0))),
-                new Todo(sessionTestUser, testGroup, "Do more stuff", LocalDateTime.now().plusDays(5L).toInstant(ZoneOffset.ofHours(0))));
+        List<Todo> dummyTodos = Arrays.asList(
+                new Todo(sessionTestUser, testGroup, TodoType.ACTION_REQUIRED, "Do stuff", LocalDateTime.now().plusDays(2L).toInstant(ZoneOffset.ofHours(0))),
+                new Todo(sessionTestUser, testGroup, TodoType.ACTION_REQUIRED, "Do more stuff", LocalDateTime.now().plusDays(5L).toInstant(ZoneOffset.ofHours(0))));
 
         List<TaskDTO> dummyTasks = new ArrayList<>();
         dummyEvents.forEach(e -> dummyTasks.add(new TaskDTO(e, sessionTestUser, dummyLog)));
         dummyTodos.forEach(t -> dummyTasks.add(new TaskDTO(t, sessionTestUser)));
 
-        List<GroupLog> dummyGroupLogs = Arrays.asList(new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_ADDED, 0L, "guy joined"),
-                                                      new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_REMOVED, 0L, "other guy left"));
+        User joiningUser = new User("0109990000", null, null);
+        User leavingUser = new User("0209990000", null, null);
+        List<GroupLog> dummyGroupLogs = Arrays.asList(new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_ADDED,
+                        joiningUser, null, null, null),
+                new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_REMOVED,
+                        leavingUser, null, null, null));
         List<LocalDate> dummyMonths = Arrays.asList(LocalDate.now(), LocalDate.now().minusMonths(1L));
 
         LocalDate now = LocalDate.now();
@@ -438,19 +450,21 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void groupHistoryLastMonthShouldWork() throws Exception {
 
-        Group testGroup = new Group("someGroupname", new User("234345345"));
-        testGroup.addMember(sessionTestUser);
+        User thisTestUser = new User("234345345", null, null);
+        Group testGroup = new Group("someGroupname", thisTestUser);
+        testGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         List<Event> dummyEvents = Collections.singletonList(new MeetingBuilder().setName("someMeeting").setStartDateTime(Instant.now()).setUser(sessionTestUser).setParent(testGroup).setEventLocation("someLoc").createMeeting());
         EventLog dummyLog = new EventLog(sessionTestUser, dummyEvents.get(0), EventLogType.RSVP);
 
-        List<Todo> dummyTodos = Collections.singletonList(new Todo(sessionTestUser, testGroup, "do stuff", LocalDateTime.now().toInstant(ZoneOffset.ofHours(0))));
+        List<Todo> dummyTodos = Collections.singletonList(new Todo(sessionTestUser, testGroup, TodoType.ACTION_REQUIRED, "do stuff", LocalDateTime.now().toInstant(ZoneOffset.ofHours(0))));
 
         List<TaskDTO> dummyTasks = new ArrayList<>();
         dummyEvents.forEach(e -> dummyTasks.add(new TaskDTO(e, sessionTestUser, dummyLog)));
         dummyTodos.forEach(t -> dummyTasks.add(new TaskDTO(t, sessionTestUser)));
 
-        List<GroupLog> dummyGroupLogs = Collections.singletonList(new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_ADDED, 0L));
+        List<GroupLog> dummyGroupLogs = Collections.singletonList(new GroupLog(testGroup, sessionTestUser,
+                GroupLogType.GROUP_MEMBER_ADDED, thisTestUser, null, null, null));
         List<LocalDate> dummyMonths = Arrays.asList(LocalDate.now(), LocalDate.now().minusMonths(1L));
 
         LocalDate lastMonth = LocalDate.now().minusMonths(1L);
@@ -468,6 +482,8 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
 
         when(groupQueryBrokerMock.getLogsForGroup(testGroup, start, end)).thenReturn(dummyGroupLogs);
         when(groupQueryBrokerMock.getMonthsGroupActive(testGroup.getUid())).thenReturn(dummyMonths);
+
+        when(notificationService.loadRecentFailedNotificationsInGroup(any(), any(), any())).thenReturn(Collections.emptyList());
 
         mockMvc.perform(get("/group/history")
                 .param("groupUid", testGroup.getUid())
@@ -503,13 +519,14 @@ public class GroupControllerTest extends WebAppAbstractUnitTest {
                 new MembershipInfo("27833403013", BaseRoles.ROLE_ORDINARY_MEMBER, null),
                 new MembershipInfo("27799814669", BaseRoles.ROLE_ORDINARY_MEMBER, null));
 
-        Group testGroup = new Group("someGroupName", new User("27616780989"));
+        Group testGroup = new Group("someGroupName", new User("27616780989", null, null));
         when(groupBrokerMock.load(testGroup.getUid())).thenReturn(testGroup);
 
         mockMvc.perform(post("/group/add_bulk").param("groupUid", String.valueOf(testGroup.getUid())).param("list",testNumbers))
                 .andExpect(status().isOk()).andExpect(view().name("group/add_bulk_error"));
         verify(groupBrokerMock,times(1)).load(testGroup.getUid());
-        verify(groupBrokerMock, times(1)).addMembers(sessionTestUser.getUid(), testGroup.getUid(), testMembers, false);
+        verify(groupBrokerMock, times(1)).addMembers(sessionTestUser.getUid(), testGroup.getUid(), testMembers,
+                GroupJoinMethod.BULK_IMPORT, false);
       //  verifyNoMoreInteractions(userManagementServiceMock);
 
     }

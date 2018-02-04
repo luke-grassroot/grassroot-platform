@@ -13,13 +13,13 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
-import za.org.grassroot.core.domain.Account;
-import za.org.grassroot.core.domain.AccountBillingRecord;
+import za.org.grassroot.core.domain.account.Account;
+import za.org.grassroot.core.domain.account.AccountBillingRecord;
 import za.org.grassroot.core.repository.AccountBillingRecordRepository;
 import za.org.grassroot.core.util.DebugUtil;
-import za.org.grassroot.integration.email.EmailSendingBroker;
-import za.org.grassroot.integration.email.GrassrootEmail;
+import za.org.grassroot.integration.messaging.GrassrootEmail;
 import za.org.grassroot.integration.exception.PaymentMethodFailedException;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 import za.org.grassroot.integration.payments.peachp.PaymentErrorPP;
 import za.org.grassroot.integration.payments.peachp.PaymentResponsePP;
 
@@ -29,6 +29,7 @@ import java.net.URI;
 import java.text.DecimalFormat;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.Objects;
 
 /**
@@ -58,8 +59,7 @@ public class PaymentBrokerImpl implements PaymentBroker {
     private AccountBillingRecordRepository billingRepository;
     private RestTemplate restTemplate;
     private ObjectMapper objectMapper;
-
-    private EmailSendingBroker emailSendingBroker;
+    private final MessagingServiceBroker messageBroker;
 
     private UriComponentsBuilder baseUriBuilder;
     private HttpHeaders stdHeaders;
@@ -123,15 +123,11 @@ public class PaymentBrokerImpl implements PaymentBroker {
 
     @Autowired
     public PaymentBrokerImpl(AccountBillingRecordRepository billingRepository,
-                             RestTemplate restTemplate, ObjectMapper objectMapper) {
+                             RestTemplate restTemplate, ObjectMapper objectMapper, MessagingServiceBroker messageBroker) {
         this.billingRepository = billingRepository;
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
-    }
-
-    @Autowired(required = false)
-    public void setEmailSendingBroker(EmailSendingBroker emailSendingBroker) {
-        this.emailSendingBroker = emailSendingBroker;
+        this.messageBroker = messageBroker;
     }
 
     @PostConstruct
@@ -282,7 +278,7 @@ public class PaymentBrokerImpl implements PaymentBroker {
         } else {
             logger.info("Error in response! {}", response.toString());
             sendFailureEmail(null, response.toString());
-            return new PaymentResponse(PaymentResultType.FAILED_OTHER, paymentId); // todo : probably need to respond
+            return new PaymentResponse(PaymentResultType.FAILED_OTHER, paymentId);
         }
     }
 
@@ -311,6 +307,11 @@ public class PaymentBrokerImpl implements PaymentBroker {
     @Transactional
     public boolean triggerRecurringPayment(AccountBillingRecord billingRecord) {
         Account account = billingRecord.getAccount();
+        if (StringUtils.isEmpty(account.getPaymentRef())) {
+            billingRecord.setNextPaymentDate(null);
+            return false;
+        }
+
         final String recurringPaymentPathVar = String.format(recurringPaymentRestPath, account.getPaymentRef());
         final double amountToPay = (double) billingRecord.getTotalAmountToPay() / 100;
         logger.info("Triggering recurring payment for : {}", account.getAccountName());
@@ -360,14 +361,11 @@ public class PaymentBrokerImpl implements PaymentBroker {
                 response.getDescription() : response.getResult().getDescription();
         record.setPaymentDescription(response.getResult().getCode() + ": " + desc);
 
-        if (emailSendingBroker != null) {
-            String email = "A payment succeeded for account " + account.getAccountName() + ", with amount paid as "
-                    + (record.getTotalAmountToPay() / 100) + ". Next billing date is " + account.getNextBillingDate();
-            emailSendingBroker.sendMail(new GrassrootEmail.EmailBuilder("Payment notification: successful")
-                    .content(email)
-                    .address(paymentsEmailNotification)
-                    .build());
-        }
+        String email = "A payment succeeded for account " + account.getAccountName() + ", with amount paid as "
+                + (record.getTotalAmountToPay() / 100) + ". Next billing date is " + account.getNextBillingDate();
+        messageBroker.sendEmail(Collections.singletonList(paymentsEmailNotification),
+                new GrassrootEmail.EmailBuilder("Payment notification: successful").content(email).build());
+
     }
 
     private void handlePaymentError(AccountBillingRecord record, HttpStatusCodeException e) {
@@ -385,26 +383,26 @@ public class PaymentBrokerImpl implements PaymentBroker {
 
     private void handlePaymentError(AccountBillingRecord record, String errorCode, String description) {
         DebugUtil.transactionRequired("");
-        record.setNextPaymentDate(Instant.now().plus(1L, ChronoUnit.DAYS)); // so it doesn't try again  immediately
+        record.setNextPaymentDate(Instant.now().plus(3L, ChronoUnit.DAYS)); // so it doesn't try again  immediately
         final String errorDescription = errorCode + ": " + description;
         logger.info("Payment Error!: {}", errorDescription);
         record.setPaymentDescription(errorDescription);
+        if (errorDescription.contains("100.150.101")) {
+            Account account = record.getAccount();
+            account.setPaymentRef(null); // todo: fix this (or just go with JS integration)
+        }
         sendFailureEmail(record, errorDescription);
     }
 
     private void sendFailureEmail(AccountBillingRecord record, String errorBody) {
-        if (emailSendingBroker != null) {
-            String email = "A payment failed.";
-            if (record != null) {
-                email += "The payment was for " + record.getAccount().getAccountName() + ", with amount paid as "
-                        + (record.getTotalAmountToPay() / 100) + ". \n";
-            }
-            email += "The error body received from the server was: \n" + errorBody;
-            emailSendingBroker.sendMail(new GrassrootEmail.EmailBuilder("Payment notification: error!")
-                    .content(email)
-                    .address(paymentsEmailNotification)
-                    .build());
+        String email = "A payment failed.";
+        if (record != null) {
+            email += "The payment was for " + record.getAccount().getAccountName() + ", with amount paid as "
+                    + (record.getTotalAmountToPay() / 100) + ". \n";
         }
+        email += "The error body received from the server was: \n" + errorBody;
+        messageBroker.sendEmail(Collections.singletonList(paymentsEmailNotification),
+                new GrassrootEmail.EmailBuilder("Payment notification: error!").content(email).build());
     }
 
 }

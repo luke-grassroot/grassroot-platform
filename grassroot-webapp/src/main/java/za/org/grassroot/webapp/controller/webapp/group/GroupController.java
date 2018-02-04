@@ -1,27 +1,38 @@
 package za.org.grassroot.webapp.controller.webapp.group;
 
 import com.google.common.collect.Sets;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.MediaType;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.Validator;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import za.org.grassroot.core.domain.*;
+import za.org.grassroot.core.domain.account.Account;
+import za.org.grassroot.core.dto.MembershipDTO;
 import za.org.grassroot.core.dto.MembershipInfo;
-import za.org.grassroot.core.dto.TaskDTO;
+import za.org.grassroot.core.dto.task.TaskDTO;
 import za.org.grassroot.core.enums.EventType;
 import za.org.grassroot.core.util.PhoneNumberUtil;
+import za.org.grassroot.integration.NotificationService;
+import za.org.grassroot.integration.PdfGeneratingService;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.exception.GroupSizeLimitExceededException;
 import za.org.grassroot.services.group.GroupBroker;
+import za.org.grassroot.services.group.MemberDataExportBroker;
 import za.org.grassroot.services.group.GroupPermissionTemplate;
 import za.org.grassroot.services.group.GroupQueryBroker;
 import za.org.grassroot.services.task.TaskBroker;
@@ -32,8 +43,16 @@ import za.org.grassroot.webapp.model.web.MemberWrapperList;
 import za.org.grassroot.webapp.util.BulkUserImportUtil;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -58,16 +77,24 @@ public class GroupController extends BaseController {
     private final GroupBroker groupBroker;
     private final TaskBroker taskBroker;
     private final GroupQueryBroker groupQueryBroker;
+    private final MemberDataExportBroker memberDataExportBroker;
     private final AccountGroupBroker accountGroupBroker;
     private final Validator groupWrapperValidator;
+    private NotificationService notificationService;
+    private PdfGeneratingService generatingService;
 
     @Autowired
-    public GroupController(GroupBroker groupBroker, TaskBroker taskBroker, GroupQueryBroker groupQueryBroker, AccountGroupBroker accountBroker, @Qualifier("groupWrapperValidator") Validator groupWrapperValidator) {
+    public GroupController(GroupBroker groupBroker, TaskBroker taskBroker, GroupQueryBroker groupQueryBroker, MemberDataExportBroker memberDataExportBroker,
+                           AccountGroupBroker accountBroker, @Qualifier("groupWrapperValidator") Validator groupWrapperValidator,
+                           NotificationService notificationService, PdfGeneratingService generatingService) {
         this.groupBroker = groupBroker;
         this.taskBroker = taskBroker;
         this.groupQueryBroker = groupQueryBroker;
+        this.memberDataExportBroker = memberDataExportBroker;
         this.accountGroupBroker = accountBroker;
         this.groupWrapperValidator = groupWrapperValidator;
+        this.notificationService = notificationService;
+        this.generatingService = generatingService;
     }
 
     /*
@@ -81,7 +108,7 @@ public class GroupController extends BaseController {
     Next methods are to view a group, core part of interface
      */
 
-    @RequestMapping("view")
+    @RequestMapping(value = "view",method = RequestMethod.GET)
     public String viewGroupIndex(Model model, @RequestParam String groupUid) {
 
         // note, coming here after group creation throws permission checking errors, so need to reload user from DB
@@ -148,10 +175,14 @@ public class GroupController extends BaseController {
             model.addAttribute("groupsForMove", permissionBroker.getActiveGroupsSorted(user, Permission.GROUP_PERMISSION_ADD_GROUP_MEMBER));
         }
 
+        model.addAttribute("flyerLanguages", generatingService.availableLanguages());
+
+        Account groupAccount = isGroupPaidFor ? accountGroupBroker.findAccountForGroup(groupUid) : null;
         model.addAttribute("atGroupSizeLimit", !groupBroker.canAddMember(groupUid));
         model.addAttribute("hasAccount", user.getPrimaryAccount() != null);
         model.addAttribute("canRemoveFromAccount", isGroupPaidFor && user.getPrimaryAccount() != null &&
-                user.getPrimaryAccount().equals(accountGroupBroker.findAccountForGroup(groupUid)));
+                user.getPrimaryAccount().equals(groupAccount));
+        model.addAttribute("hasPayPerMessage", groupAccount != null && groupAccount.isBillPerMessage());
 
         return "group/view";
     }
@@ -185,7 +216,8 @@ public class GroupController extends BaseController {
         if (PhoneNumberUtil.testInputNumber(phoneNumber)) {
             MembershipInfo newMember = new MembershipInfo(phoneNumber, roleName, displayName);
             try {
-                groupBroker.addMembers(getUserProfile().getUid(), groupUid, Sets.newHashSet(newMember), false);
+                groupBroker.addMembers(getUserProfile().getUid(), groupUid, Sets.newHashSet(newMember),
+                        GroupJoinMethod.ADDED_BY_OTHER_MEMBER, false);
                 addMessage(attributes, MessageType.SUCCESS, "group.addmember.success", request);
             } catch (GroupSizeLimitExceededException e) {
                 addMessage(attributes, MessageType.ERROR, "group.addmember.limit", request);
@@ -406,7 +438,7 @@ public class GroupController extends BaseController {
 
     @RequestMapping(value = "add_bulk", method = RequestMethod.POST)
     public String addMembersBulkDo(Model model, @RequestParam String groupUid, @RequestParam String list,
-                                   HttpServletRequest request) {
+                                   RedirectAttributes attributes, HttpServletRequest request) {
 
         Group group = groupBroker.load(groupUid);
 
@@ -421,7 +453,8 @@ public class GroupController extends BaseController {
                 membershipInfoSet.add(new MembershipInfo(number, BaseRoles.ROLE_ORDINARY_MEMBER, null));
             // todo : intercept before it gets here (i.e., put a count and do a validation)
             try {
-                groupBroker.addMembers(getUserProfile().getUid(), groupUid, membershipInfoSet, false);
+                groupBroker.addMembers(getUserProfile().getUid(), groupUid, membershipInfoSet,
+                        GroupJoinMethod.BULK_IMPORT, false);
             } catch (GroupSizeLimitExceededException e) {
                 sizeExceeded = true;
             }
@@ -432,11 +465,12 @@ public class GroupController extends BaseController {
         // todo : fix this (error page etc)
         if (mapOfNumbers.get("error").isEmpty()) {
             if (!sizeExceeded) {
-                addMessage(model, MessageType.SUCCESS, "group.bulk.success", new Integer[]{numbersToBeAdded.size()}, request);
+                addMessage(attributes, MessageType.SUCCESS, "group.bulk.success", new Integer[]{numbersToBeAdded.size()}, request);
             } else {
-                addMessage(model, MessageType.ERROR, "group.addmember.limit", request);
+                addMessage(attributes, MessageType.ERROR, "group.addmember.limit", request);
             }
-            return viewGroupIndex(model, groupUid);
+            attributes.addAttribute("groupUid", groupUid);
+            return "redirect:/group/view";
         } else {
             model.addAttribute("errors", true);
             model.addAttribute("group", group);
@@ -483,7 +517,7 @@ public class GroupController extends BaseController {
                 MembershipInfo thisMember = new MembershipInfo(getUserProfile().getPhoneNumber(), BaseRoles.ROLE_GROUP_ORGANIZER,
                         getUserProfile().getDisplayName());
                 Group group = groupBroker.create(getUserProfile().getUid(), groupName, null, Collections.singleton(thisMember),
-                        GroupPermissionTemplate.DEFAULT_GROUP, null, null, true);
+                        GroupPermissionTemplate.DEFAULT_GROUP, null, null, true, false);
                 groupBroker.copyMembersIntoGroup(getUserProfile().getUid(), group.getUid(), memberUids);
                 addMessage(attributes, MessageType.SUCCESS, "group.transfer." + (removeMembers ? "move" : "copy") + ".new", request);
                 redirectUid = group.getUid();
@@ -584,7 +618,7 @@ public class GroupController extends BaseController {
     }
 
     @RequestMapping(value = "link", method = RequestMethod.POST)
-    public String linkToParent(Model model, @RequestParam String groupUid, @RequestParam String parentUid,
+    public String linkToParent(@RequestParam String groupUid, @RequestParam String parentUid,
                                RedirectAttributes redirectAttributes, HttpServletRequest request) {
         // call will only succeed if user has requisite permissions (and link is only present on view page if so)
         groupBroker.link(getUserProfile().getUid(), groupUid, parentUid);
@@ -682,6 +716,22 @@ public class GroupController extends BaseController {
         }
     }
 
+
+    @RequestMapping(value = "export/xls")
+    public void exportMembers(@RequestParam String groupUid, HttpServletResponse response) throws IOException {
+
+        String fileName = "group_members.xlsx";
+        response.setContentType(MimeTypeUtils.APPLICATION_OCTET_STREAM_VALUE);
+        response.setHeader("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
+        response.setHeader("Cache-Control", "no-cache");
+        response.setHeader("Pragma", "no-cache");
+        response.setDateHeader("Expires", 0);
+
+        XSSFWorkbook xls = memberDataExportBroker.exportGroup(groupUid, getUserProfile().getUid());
+        xls.write(response.getOutputStream());
+        response.flushBuffer();
+    }
+
     /**
      * SECTION: Group history pages
      */
@@ -713,17 +763,69 @@ public class GroupController extends BaseController {
         List<GroupLog> groupLogsInPeriod = groupQueryBroker.getLogsForGroup(group, startDateTime, endDateTime);
         List<LocalDate> monthsActive = groupQueryBroker.getMonthsGroupActive(groupUid);
 
+        List<Notification> recentlyFailedNotifications = notificationService.loadRecentFailedNotificationsInGroup(startDateTime, endDateTime, group);
+
+        DateTimeFormatter instantFormatter =
+                DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
+                        .withLocale(Locale.UK)
+                        .withZone(ZoneId.systemDefault());
+
+
         model.addAttribute("group", group);
 
         log.info("tasksInPeriod: " + tasksInPeriod);
 
+        model.addAttribute("instantFormatter", instantFormatter);
+
         model.addAttribute("tasksInPeriod", tasksInPeriod);
         model.addAttribute("groupLogsInPeriod", groupLogsInPeriod);
+
+        model.addAttribute("recentlyFailedNotifications", recentlyFailedNotifications);
 
         model.addAttribute("month", StringUtils.isEmpty(monthToView) ? null : LocalDate.parse(monthToView));
         model.addAttribute("monthsToView", monthsActive);
 
         return "group/history";
+    }
+
+    // need separate methods to specify produces
+    @RequestMapping(value = "/flyer",method = RequestMethod.GET,params = "typeOfFile=PDF",produces = MediaType.APPLICATION_PDF_VALUE)
+    @ResponseBody //"application/pdf",
+    public FileSystemResource genPdf(@RequestParam String groupUid,
+                                     @RequestParam boolean color,
+                                     @RequestParam Locale language,
+                                     @RequestParam String typeOfFile) {
+        return generateFlyer(groupUid, color, language, typeOfFile);
+    }
+
+    @RequestMapping(value = "/flyer",method = RequestMethod.GET,params = "typeOfFile=JPEG",produces = MediaType.IMAGE_JPEG_VALUE)
+    @ResponseBody
+    public FileSystemResource genImage(@RequestParam String groupUid,
+                                       @RequestParam boolean color,
+                                       @RequestParam Locale language,
+                                       @RequestParam String typeOfFile){
+        return generateFlyer(groupUid, color, language, typeOfFile);
+    }
+
+    private FileSystemResource generateFlyer(String groupUid, boolean color, Locale language, String typeOfFile) {
+        try {
+            return new FileSystemResource(generatingService.generateGroupFlyer(groupUid, color, language, typeOfFile));
+        } catch (FileNotFoundException e) {
+            log.error("Could not generate flyer!", e);
+            return null;
+        }
+    }
+
+
+    @RequestMapping(value = "/availableLanguages",method = RequestMethod.GET)
+    public void getAvailableLanguages(Model model)
+    {
+        List<Locale> languages = generatingService.availableLanguages();
+        List<String> strLanguages = new ArrayList<>();
+        for (Locale lang : languages ) {
+            strLanguages.add(lang.getISO3Language());
+        }
+        model.addAttribute("availableLanguages",strLanguages);
     }
 
     @RequestMapping(value = "view_event")
@@ -739,6 +841,30 @@ public class GroupController extends BaseController {
     public String redirectToMessaging() {
 
         return "group/temp";
+    }
+
+
+    @RequestMapping(value = "user-joins")
+    @ResponseBody
+    public Map<String, Object> myGroupsRecentUserJoins(@RequestParam("gcd") Integer maxGroupAgeInDays,
+                                                       @RequestParam("ujd") Integer joinedInLastXDays,
+                                                       Pageable pageable) {
+
+        Instant joinedAfter = Instant.now().minus(joinedInLastXDays, ChronoUnit.DAYS);
+        Instant groupCreatedAfter = Instant.now().minus(maxGroupAgeInDays, ChronoUnit.DAYS);
+        User user = getUserProfile();
+
+        long totalJoins = groupQueryBroker.countMembershipsInGroups(user, groupCreatedAfter, joinedAfter);
+
+        Page<MembershipDTO> memberships = groupQueryBroker.getMembershipsInGroups(user, groupCreatedAfter, joinedAfter, pageable);
+
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("totalJoins", totalJoins);
+        result.put("memberships", memberships);
+
+        return result;
+
     }
 
 }

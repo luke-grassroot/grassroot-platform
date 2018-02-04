@@ -3,6 +3,7 @@ package za.org.grassroot.core.domain.notification;
 import za.org.grassroot.core.domain.Notification;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.UserLog;
+import za.org.grassroot.core.enums.DeliveryRoute;
 import za.org.grassroot.core.enums.NotificationDetailedType;
 import za.org.grassroot.core.enums.NotificationType;
 
@@ -14,8 +15,9 @@ public abstract class UserNotification extends Notification {
 	}
 
 	protected UserNotification(User target, String message, UserLog userLog) {
-		super(target, message, userLog, false);
-	}
+		super(target, message, userLog);
+        deliveryChannel = DeliveryRoute.SMS;
+    }
 
 	@Override
 	public NotificationType getNotificationType() {

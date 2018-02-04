@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import za.org.grassroot.core.domain.Group;
+import za.org.grassroot.core.domain.GroupJoinMethod;
 import za.org.grassroot.core.domain.Permission;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.dto.MembershipInfo;
@@ -83,8 +84,8 @@ public class GroupAdvImportController extends BaseController {
         File tmpFile = new File(tempPath);
         logger.info("phoneCol = {}, nameCol = {}, header = {}, loaded temp file, path = {}", phoneColumn, nameColumn, header, tmpFile.getAbsolutePath());
 
-        List<MembershipInfo> members = dataImportBroker.processMembers(tmpFile, phoneColumn, nameColumn,
-                roleColumn == -1 ? null : roleColumn, header);
+        List<MembershipInfo> members = dataImportBroker.processMembers(tmpFile, header, phoneColumn, nameColumn,
+                roleColumn == -1 ? null : roleColumn, null, null);
         model.addAttribute("members", members);
         model.addAttribute("groupUid", groupUid);
 
@@ -102,7 +103,8 @@ public class GroupAdvImportController extends BaseController {
                              RedirectAttributes attributes, HttpServletRequest request) {
         // todo : intercept prior to here (UI)
         try {
-            groupBroker.addMembers(getUserProfile().getUid(), groupUid, new HashSet<>(groupWrapper.getListOfMembers()), false);
+            groupBroker.addMembers(getUserProfile().getUid(), groupUid, new HashSet<>(groupWrapper.getListOfMembers()),
+                    GroupJoinMethod.BULK_IMPORT, false);
             addMessage(attributes, MessageType.SUCCESS, "group.bulk.success", new Integer[]{groupWrapper.getListOfMembers().size()}, request);
         } catch (GroupSizeLimitExceededException e) {
             addMessage(attributes, MessageType.ERROR, "group.addmember.limit", request);

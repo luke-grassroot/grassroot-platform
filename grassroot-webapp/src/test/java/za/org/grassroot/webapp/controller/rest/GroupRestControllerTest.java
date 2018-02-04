@@ -10,14 +10,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import za.org.grassroot.core.domain.BaseRoles;
-import za.org.grassroot.core.domain.Event;
 import za.org.grassroot.core.domain.Group;
+import za.org.grassroot.core.domain.GroupJoinMethod;
 import za.org.grassroot.core.domain.GroupLog;
-import za.org.grassroot.core.enums.GroupLogType;
+import za.org.grassroot.core.domain.task.Event;
 import za.org.grassroot.core.dto.MembershipInfo;
+import za.org.grassroot.core.enums.GroupLogType;
 import za.org.grassroot.services.group.GroupPermissionTemplate;
-import za.org.grassroot.webapp.controller.rest.android.GroupQueryRestController;
-import za.org.grassroot.webapp.controller.rest.android.GroupRestController;
+import za.org.grassroot.webapp.controller.android1.GroupQueryRestController;
+import za.org.grassroot.webapp.controller.android1.GroupRestController;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,12 +57,13 @@ public class GroupRestControllerTest extends RestAbstractUnitTest {
     public void createGroupShouldWork() throws Exception {
 
         settingUpDummyData(testGroup, groups, membershipInfo, membersToAdd);
-        GroupLog groupLog = new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_ADDED, 0L, "");
         membersToAdd.add(new MembershipInfo("27810001234", BaseRoles.ROLE_ORDINARY_MEMBER, "test user"));
+        GroupLog groupLog = new GroupLog(testGroup, sessionTestUser, GroupLogType.GROUP_MEMBER_ADDED_AT_CREATION,
+                sessionTestUser, null, null, "");
 
         when(userManagementServiceMock.findByInputNumber(testUserPhone)).thenReturn(sessionTestUser);
         when(groupBrokerMock.create(sessionTestUser.getUid(), testGroupName, null, membersToAdd,
-                                    GroupPermissionTemplate.DEFAULT_GROUP, testEventDescription, null, true)).thenReturn(testGroup);
+                                    GroupPermissionTemplate.DEFAULT_GROUP, testEventDescription, null, true, false)).thenReturn(testGroup);
         when(groupQueryBrokerMock.getMostRecentLog(testGroup)).thenReturn(groupLog);
 
         log.info("Mock set up for : userUid={}, name={}, members={}, desc={}", sessionTestUser.getUid(), testGroupName,
@@ -76,7 +78,7 @@ public class GroupRestControllerTest extends RestAbstractUnitTest {
                 .andExpect(status().isOk());
 
         verify(userManagementServiceMock).findByInputNumber(testUserPhone);
-        verify(groupBrokerMock).create(sessionTestUser.getUid(), testGroupName, null, membersToAdd, GroupPermissionTemplate.DEFAULT_GROUP, meetingEvent.getDescription(), null, true);
+        verify(groupBrokerMock).create(sessionTestUser.getUid(), testGroupName, null, membersToAdd, GroupPermissionTemplate.DEFAULT_GROUP, meetingEvent.getDescription(), null, true, false);
         verify(groupQueryBrokerMock, times(1)).getMostRecentLog(testGroup);
         verify(groupBrokerMock, times(1)).checkForDuplicate(sessionTestUser.getUid(), testGroupName);
         verifyNoMoreInteractions(groupBrokerMock);
@@ -86,7 +88,7 @@ public class GroupRestControllerTest extends RestAbstractUnitTest {
 
     private void settingUpDummyData(Group group, List<Group> groups, MembershipInfo membershipInfo, Set<MembershipInfo> membersToAdd) {
         membersToAdd.add(membershipInfo);
-        group.addMember(sessionTestUser, BaseRoles.ROLE_GROUP_ORGANIZER);
+        group.addMember(sessionTestUser, BaseRoles.ROLE_GROUP_ORGANIZER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
         groups.add(group);
         group.setDescription(testEventDescription);
     }

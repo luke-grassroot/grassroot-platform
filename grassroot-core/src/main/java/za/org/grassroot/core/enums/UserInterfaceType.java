@@ -1,14 +1,15 @@
 package za.org.grassroot.core.enums;
 
-/**
- * Created by luke on 2016/02/15.
- */
+
 public enum UserInterfaceType {
     UNKNOWN("unknown"),
     USSD("ussd"),
     WEB("web"),
     ANDROID("android"),
-    SYSTEM("system");
+    SYSTEM("system"),
+    INCOMING_SMS("incoming sms"),
+    WEB_2("rebuilt_frontend"),
+    ANDROID_2("second android");
 
     private final String text;
 

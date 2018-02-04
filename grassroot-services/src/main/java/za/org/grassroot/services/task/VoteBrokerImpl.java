@@ -9,8 +9,12 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
-import za.org.grassroot.core.domain.*;
+import za.org.grassroot.core.domain.BaseRoles;
+import za.org.grassroot.core.domain.Membership;
+import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.notification.VoteResultsNotification;
+import za.org.grassroot.core.domain.task.EventLog;
+import za.org.grassroot.core.domain.task.Vote;
 import za.org.grassroot.core.enums.EventLogType;
 import za.org.grassroot.core.enums.EventRSVPResponse;
 import za.org.grassroot.core.repository.EventLogRepository;
@@ -19,6 +23,7 @@ import za.org.grassroot.core.repository.VoteRepository;
 import za.org.grassroot.core.util.StringArrayUtil;
 import za.org.grassroot.services.MessageAssemblingService;
 import za.org.grassroot.services.PermissionBroker;
+import za.org.grassroot.services.exception.TaskFinishedException;
 import za.org.grassroot.services.util.LogsAndNotificationsBroker;
 import za.org.grassroot.services.util.LogsAndNotificationsBundle;
 
@@ -115,8 +120,13 @@ public class VoteBrokerImpl implements VoteBroker {
         Objects.requireNonNull(voteUid);
         Objects.requireNonNull(voteOption);
 
-        User user = userRepository.findOneByUid(userUid);
         Vote vote = voteRepository.findOneByUid(voteUid);
+
+        if (vote.getEventStartDateTime().isBefore(Instant.now())) {
+            throw new TaskFinishedException();
+        }
+
+        User user = userRepository.findOneByUid(userUid);
 
         validateUserPartOfVote(user, vote, true);
 
@@ -167,23 +177,30 @@ public class VoteBrokerImpl implements VoteBroker {
 
     @Override
     @Transactional(readOnly = true)
-    public Map<String, Long> fetchVoteResults(String userUid, String voteUid) {
+    public Map<String, Long> fetchVoteResults(String userUid, String voteUid, boolean swallowMemberException) {
         Objects.requireNonNull(voteUid);
         Objects.requireNonNull(userUid);
 
         User user = userRepository.findOneByUid(userUid);
         Vote vote = voteRepository.findOneByUid(voteUid);
 
-        validateUserPartOfVote(user, vote, false);
-
-        return StringArrayUtil.isAllEmptyOrNull(vote.getVoteOptions()) ?
-                calculateYesNoResults(vote) : calculateMultiOptionResults(vote, vote.getVoteOptions());
+        try {
+            validateUserPartOfVote(user, vote, false);
+            return StringArrayUtil.isAllEmptyOrNull(vote.getVoteOptions()) ?
+                    calculateYesNoResults(vote) : calculateMultiOptionResults(vote, vote.getVoteOptions());
+        } catch (AccessDeniedException e) {
+            if (swallowMemberException) {
+                return new HashMap<>();
+            } else {
+                throw e;
+            }
+        }
     }
 
     private Map<String, Long> calculateMultiOptionResults(Vote vote, List<String> options) {
         Map<String, Long> results = new LinkedHashMap<>();
         List<EventLog> eventLogs = eventLogRepository.findAll(Specifications.where(isResponseToVote(vote)));
-        options.forEach(o -> results.put(o, eventLogs.stream().filter(el -> o.equals(el.getTag())).count()));
+        options.forEach(o -> results.put(o, eventLogs.stream().filter(el -> o.equalsIgnoreCase(el.getTag())).count()));
         return results;
     }
 
@@ -191,12 +208,14 @@ public class VoteBrokerImpl implements VoteBroker {
         // vote may have been done via old method, so need to do a check, for now, if there are no
         // option responses (note: if no responses at all, it will still return valid result, since we
         // know at this point that it is a yes/no vote)
+
         return eventLogRepository.count(Specifications.where(ofType(EventLogType.VOTE_OPTION_RESPONSE))) == 0 ?
                 calculateOldVoteResult(vote) :
                 calculateMultiOptionResults(vote, optionsForYesNoVote); // will just return
     }
 
     private Map<String, Long> calculateOldVoteResult(Vote vote) {
+
         List<EventLog> eventLogs = eventLogRepository.findAll(Specifications.where(
                 ofType(EventLogType.RSVP)).and(forEvent(vote)));
         Map<String, Long> results = new LinkedHashMap<>();

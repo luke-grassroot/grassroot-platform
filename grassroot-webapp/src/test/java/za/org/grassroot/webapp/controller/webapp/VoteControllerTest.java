@@ -8,11 +8,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import za.org.grassroot.core.domain.*;
-import za.org.grassroot.core.dto.ResponseTotalsDTO;
-import za.org.grassroot.core.enums.EventRSVPResponse;
+import za.org.grassroot.core.domain.task.Vote;
 import za.org.grassroot.services.task.VoteBroker;
 import za.org.grassroot.webapp.controller.BaseController;
-import za.org.grassroot.webapp.model.web.EventWrapper;
 import za.org.grassroot.webapp.model.web.VoteWrapper;
 
 import java.time.Instant;
@@ -48,7 +46,7 @@ public class VoteControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void createVoteWorksWhenGroupIdSpecified() throws Exception {
 
-        Group testGroup = new Group("Dummy Group3", new User("234345345"));
+        Group testGroup = new Group("Dummy Group3", new User("234345345", null, null));
 
         when(groupBrokerMock.load(testGroup.getUid())).thenReturn(testGroup);
         when(userManagementServiceMock.load(sessionTestUser.getUid())).thenReturn(sessionTestUser);
@@ -70,7 +68,7 @@ public class VoteControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void createVoteWorksWhengroupNotSpecified() throws Exception {
 
-        Group testGroup = new Group("Dummy Group3", new User("234345345"));
+        Group testGroup = new Group("Dummy Group3", new User("234345345", null, null));
         List<Group> testPossibleGroups = Collections.singletonList(testGroup);
 
         when(userManagementServiceMock.load(sessionTestUser.getUid())).thenReturn(sessionTestUser);
@@ -91,7 +89,7 @@ public class VoteControllerTest extends WebAppAbstractUnitTest {
     @Test
     public void voteCreateDoWorks() throws Exception {
 
-        Group testGroup = new Group("Dummy Group3", new User("234345345"));
+        Group testGroup = new Group("Dummy Group3", new User("234345345", null, null));
         LocalDateTime testTime = LocalDateTime.now().plusMinutes(7L);
         VoteWrapper testVote = VoteWrapper.makeEmpty();
         testVote.setTitle("test vote");
@@ -116,16 +114,18 @@ public class VoteControllerTest extends WebAppAbstractUnitTest {
         Group testGroup = new Group("tg1", sessionTestUser);
         List<User> testUsers = new ArrayList<>();
         for (int i = 0; i < 25; i++) {
-            testUsers.add(new User("050111000" + i));
+            testUsers.add(new User("050111000" + i, null, null));
         }
-        testUsers.forEach(testGroup::addMember);
+
+        testUsers.forEach(usr -> testGroup.addMember(usr, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null));
+
         Vote testVote = new Vote("test", Instant.now(), sessionTestUser, testGroup);
         Map<String, Long> testVoteResults = new LinkedHashMap<>();
         testVoteResults.put("yes", 5L);
         testVoteResults.put("no", 10L);
         testVoteResults.put("abstain", 7L);
         when(voteBrokerMock.load(testVote.getUid())).thenReturn(testVote);
-        when(voteBrokerMock.fetchVoteResults(sessionTestUser.getUid(), testVote.getUid())).thenReturn(testVoteResults);
+        when(voteBrokerMock.fetchVoteResults(sessionTestUser.getUid(), testVote.getUid(), false)).thenReturn(testVoteResults);
 
         mockMvc.perform(get("/vote/view").param("eventUid", testVote.getUid()))
                 .andExpect(status().isOk()).andExpect(view().name("vote/view"))
@@ -134,7 +134,7 @@ public class VoteControllerTest extends WebAppAbstractUnitTest {
                 .andExpect(model().attribute("vote", hasProperty("uid", is(testVote.getUid()))));
 
         verify(voteBrokerMock, times(1)).load(testVote.getUid());
-        verify(voteBrokerMock, times(1)).fetchVoteResults(sessionTestUser.getUid(), testVote.getUid());
+        verify(voteBrokerMock, times(1)).fetchVoteResults(sessionTestUser.getUid(), testVote.getUid(), false);
         verifyNoMoreInteractions(voteBrokerMock);
     }
 

@@ -10,10 +10,11 @@ public enum NotificationType {
 	TODO,
 	CHAT,
 	ACCOUNT,
+	GROUP,
 	USER,
 	LIVEWIRE,
+	BROADCAST,
 	GENERAL
-
 
 	//
 }

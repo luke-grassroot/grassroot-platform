@@ -6,6 +6,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import za.org.grassroot.core.domain.BaseRoles;
 import za.org.grassroot.core.domain.Group;
+import za.org.grassroot.core.domain.GroupJoinMethod;
 import za.org.grassroot.core.dto.MembershipInfo;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.group.GroupPermissionTemplate;
@@ -44,7 +45,7 @@ public class GroupCreateControllerTest extends WebAppAbstractUnitTest {
 
         GroupWrapper dummyGroupCreator = new GroupWrapper();
         dummyGroupCreator.setGroupName("DummyGroup");
-        dummyGroupCreator.addMember(new MembershipInfo(sessionTestUser, BaseRoles.ROLE_GROUP_ORGANIZER, null));
+        dummyGroupCreator.addMember(new MembershipInfo(sessionTestUser, BaseRoles.ROLE_GROUP_ORGANIZER, null, null));
         mockMvc.perform(get("/group/create"))
                 .andExpect(view().name("group/create"))
                 .andExpect(model().attribute("groupCreator", hasProperty("addedMembers", hasSize(dummyGroupCreator.getAddedMembers().size()))));
@@ -71,11 +72,11 @@ public class GroupCreateControllerTest extends WebAppAbstractUnitTest {
                                                       BaseRoles.ROLE_GROUP_ORGANIZER, sessionTestUser.getDisplayName());
         dummyGroupCreator.addMember(organizer);
         Group dummyGroup = new Group(dummyGroupCreator.getGroupName(), sessionTestUser);
-        dummyGroup.addMember(sessionTestUser);
+        dummyGroup.addMember(sessionTestUser, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_BY_OTHER_MEMBER, null);
 
         when(groupBrokerMock.create(sessionTestUser.getUid(), dummyGroupCreator.getGroupName(), null,
                                     new HashSet<>(dummyGroupCreator.getAddedMembers()),
-                                    GroupPermissionTemplate.DEFAULT_GROUP, null, (60 * 24), true)).thenReturn(dummyGroup);
+                                    GroupPermissionTemplate.DEFAULT_GROUP, null, (60 * 24), true, false)).thenReturn(dummyGroup);
 
         when((userManagementServiceMock.findByInputNumber(sessionTestUser.getPhoneNumber()))).thenReturn(sessionTestUser);
 

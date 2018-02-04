@@ -1,7 +1,5 @@
 package za.org.grassroot.webapp.controller.ussd;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
@@ -10,10 +8,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
-import za.org.grassroot.core.domain.Event;
-import za.org.grassroot.core.domain.EventRequest;
+import za.org.grassroot.core.domain.EntityForUserResponse;
 import za.org.grassroot.core.domain.Group;
 import za.org.grassroot.core.domain.User;
+import za.org.grassroot.core.domain.task.Event;
+import za.org.grassroot.core.domain.task.EventRequest;
+import za.org.grassroot.core.domain.task.Vote;
 import za.org.grassroot.core.enums.EventType;
 import za.org.grassroot.core.enums.UserInterfaceType;
 import za.org.grassroot.core.util.DateTimeUtil;
@@ -21,6 +21,7 @@ import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.exception.AccountLimitExceededException;
 import za.org.grassroot.services.exception.EventStartTimeNotInFutureException;
+import za.org.grassroot.services.task.EventBroker;
 import za.org.grassroot.services.task.EventRequestBroker;
 import za.org.grassroot.services.task.VoteBroker;
 import za.org.grassroot.webapp.controller.ussd.menus.USSDMenu;
@@ -29,6 +30,7 @@ import za.org.grassroot.webapp.enums.VoteTime;
 import za.org.grassroot.webapp.model.ussd.AAT.Request;
 import za.org.grassroot.webapp.util.USSDEventUtil;
 import za.org.grassroot.webapp.util.USSDGroupUtil;
+import za.org.grassroot.webapp.util.USSDUrlUtil;
 
 import java.net.URISyntaxException;
 import java.time.Instant;
@@ -39,35 +41,35 @@ import java.time.temporal.ChronoUnit;
 import static org.springframework.web.bind.annotation.RequestMethod.GET;
 import static za.org.grassroot.core.domain.Permission.GROUP_PERMISSION_CREATE_GROUP_VOTE;
 import static za.org.grassroot.webapp.enums.VoteTime.*;
-import static za.org.grassroot.webapp.util.USSDUrlUtil.backVoteUrl;
-import static za.org.grassroot.webapp.util.USSDUrlUtil.saveVoteMenu;
+import static za.org.grassroot.webapp.util.USSDUrlUtil.*;
 
 /**
  * Created by luke on 2015/10/28.
  */
 @RequestMapping(method = GET, produces = MediaType.APPLICATION_XML_VALUE)
 @RestController
-public class USSDVoteController extends USSDController {
-
-    private static final Logger log = LoggerFactory.getLogger(USSDVoteController.class);
+public class USSDVoteController extends USSDBaseController {
 
     @Value("${grassroot.events.limit.enabled:false}")
     private boolean eventMonthlyLimitActive;
 
     private static final int EVENT_LIMIT_WARNING_THRESHOLD = 5; // only warn when below this
 
+    private final EventBroker eventBroker;
     private final EventRequestBroker eventRequestBroker;
     private final VoteBroker voteBroker;
     private final PermissionBroker permissionBroker;
     private final AccountGroupBroker accountGroupBroker;
 
     private USSDEventUtil eventUtil;
+    private USSDGroupUtil groupUtil;
 
     private static final String path = homePath + voteMenus;
     private static final USSDSection thisSection = USSDSection.VOTES;
 
     @Autowired
-    public USSDVoteController(EventRequestBroker eventRequestBroker, VoteBroker voteBroker, PermissionBroker permissionBroker, AccountGroupBroker accountGroupBroker) {
+    public USSDVoteController(EventBroker eventBroker, EventRequestBroker eventRequestBroker, VoteBroker voteBroker, PermissionBroker permissionBroker, AccountGroupBroker accountGroupBroker) {
+        this.eventBroker = eventBroker;
         this.eventRequestBroker = eventRequestBroker;
         this.voteBroker = voteBroker;
         this.permissionBroker = permissionBroker;
@@ -79,6 +81,11 @@ public class USSDVoteController extends USSDController {
         this.eventUtil = eventUtil;
     }
 
+    @Autowired
+    protected void setGroupUtil(USSDGroupUtil groupUtil) {
+        this.groupUtil = groupUtil;
+    }
+
     private String menuUrl(String menu, String requestUid) {
         return voteMenus + menu + "?requestUid=" + requestUid;
     }
@@ -86,6 +93,30 @@ public class USSDVoteController extends USSDController {
     /*
     Vote response menu
      */
+    public USSDMenu assembleVoteMenu(User user, EntityForUserResponse entity) {
+        Vote vote = (Vote) entity;
+
+        final String[] promptFields = new String[]{vote.getAncestorGroup().getName(""),
+                vote.getAncestorGroup().getMembership(vote.getCreatedByUser()).getDisplayName(),
+                vote.getName()};
+
+        final String voteUri = voteMenus + "record?voteUid=" + vote.getUid() + "&response=";
+        final String optionMsgKey = voteKey + "." + optionsKey;
+
+        USSDMenu openingMenu = new USSDMenu(getMessage(USSDSection.HOME, startMenu, promptKey + "-vote", promptFields, user));
+
+        if (vote.getVoteOptions().isEmpty()) {
+            openingMenu.addMenuOption(voteUri + "YES", getMessage(optionMsgKey + "yes", user));
+            openingMenu.addMenuOption(voteUri + "NO", getMessage(optionMsgKey + "no", user));
+            openingMenu.addMenuOption(voteUri + "ABSTAIN", getMessage(optionMsgKey + "abstain", user));
+        } else {
+            vote.getVoteOptions().forEach(o -> {
+                openingMenu.addMenuOption(voteUri + USSDUrlUtil.encodeParameter(o), o);
+            });
+        }
+
+        return openingMenu;
+    }
 
     @RequestMapping(value = path + "record")
     @ResponseBody
@@ -115,7 +146,7 @@ public class USSDVoteController extends USSDController {
         // ask for group will by definition return the "no group" menu, since we are in this branch
         USSDMenu menu = possibleGroups != 0 ?
                 new USSDMenu(getMessage(thisSection, "subject", promptKey, user), nextUrl) :
-                ussdGroupUtil.askForGroup(new USSDGroupUtil.GroupMenuBuilder(user, thisSection));
+                groupUtil.askForGroup(new USSDGroupUtil.GroupMenuBuilder(user, thisSection));
         return menuBuilder(menu);
     }
 
@@ -175,7 +206,7 @@ public class USSDVoteController extends USSDController {
                                  @RequestParam(required = false) String priorInput) throws URISyntaxException {
         String userInput = StringUtils.isEmpty(priorInput) ? request : priorInput;
         User user = userManager.findByInputNumber(msisdn,
-                saveVoteMenu("multi_option/add", requestUid) + "&priorInput=" + userInput);
+                saveVoteMenu("multi_option/add", requestUid) + "&priorInput=" + encodeParameter(userInput));
         // watch for duplication but service & core should both catch it
         int numberOptions = eventRequestBroker.load(requestUid).getVoteOptions().size();
         if (numberOptions > 1 && "0".equals(userInput.trim())) {
@@ -198,7 +229,7 @@ public class USSDVoteController extends USSDController {
             eventRequestBroker.updateVoteGroup(user.getUid(), requestUid, group.getUid());
             return timeMenu(user, timePrompt, requestUid);
         } else {
-            return ussdGroupUtil.askForGroup(new USSDGroupUtil
+            return groupUtil.askForGroup(new USSDGroupUtil
                     .GroupMenuBuilder(user, thisSection)
                     .messageKey("group")
                     .urlForExistingGroup("closing?requestUid=" + requestUid));

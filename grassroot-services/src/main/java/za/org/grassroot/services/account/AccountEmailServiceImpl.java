@@ -9,16 +9,17 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.thymeleaf.TemplateEngine;
 import org.thymeleaf.context.Context;
-import za.org.grassroot.core.domain.Account;
-import za.org.grassroot.core.domain.AccountBillingRecord;
+import za.org.grassroot.core.domain.account.Account;
+import za.org.grassroot.core.domain.account.AccountBillingRecord;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.association.AccountSponsorshipRequest;
-import za.org.grassroot.integration.email.GrassrootEmail;
+import za.org.grassroot.integration.messaging.GrassrootEmail;
 import za.org.grassroot.services.util.MessageUtils;
 
 import java.text.DecimalFormat;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static za.org.grassroot.core.util.DateTimeUtil.formatAtSAST;
 import static za.org.grassroot.services.util.MessageUtils.getUserLocale;
@@ -53,8 +54,9 @@ public class AccountEmailServiceImpl implements AccountEmailService {
 
     @Override
     public String createAccountBillingNotification(AccountBillingRecord record) {
+        Instant nextPayDate = record.getNextPaymentDate() == null ? Instant.now().plus(7, ChronoUnit.DAYS) : record.getNextPaymentDate();
         return messageSource.getMessage("sms.statement.notification", new String[] {
-                billFormat.format((double) record.getTotalAmountToPay() / 100), formatAtSAST(record.getNextPaymentDate(), shortDateFormatter)
+                billFormat.format((double) record.getTotalAmountToPay() / 100), formatAtSAST(nextPayDate, shortDateFormatter)
         }, getUserLocale(record.getAccount().getBillingUser()));
     }
 
@@ -207,13 +209,7 @@ public class AccountEmailServiceImpl implements AccountEmailService {
         final Context ctx = new Context();
         ctx.setVariable("accountLink", urlToViewAccount + request.getRequestor().getUid());
 
-        List<String> addresses = request.getRequestor().getAdministrators()
-                .stream()
-                .filter(u -> !StringUtils.isEmpty(u.getEmailAddress()) && !u.equals(request.getDestination()))
-                .map(User::getEmailAddress).collect(Collectors.toList());
-
         return new GrassrootEmail.EmailBuilder(subject)
-                .address(String.join(",", addresses))
                 .content(templateEngine.process("text/sponsorship_approved", ctx))
                 .htmlContent(templateEngine.process("html/sponsorship_approved", ctx))
                 .build();

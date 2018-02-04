@@ -1,6 +1,6 @@
 package za.org.grassroot.services.task;
 
-import za.org.grassroot.core.domain.Vote;
+import za.org.grassroot.core.domain.task.Vote;
 
 import java.util.List;
 import java.util.Map;
@@ -21,6 +21,6 @@ public interface VoteBroker {
 
     void calculateAndSendVoteResults(String voteUid);
 
-    Map<String, Long> fetchVoteResults(String userUid, String voteUid);
+    Map<String, Long> fetchVoteResults(String userUid, String voteUid, boolean swallowMemberException);
 
 }

@@ -8,8 +8,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
-import za.org.grassroot.core.domain.Account;
 import za.org.grassroot.core.domain.User;
+import za.org.grassroot.core.domain.account.Account;
 import za.org.grassroot.core.domain.association.AccountSponsorshipRequest;
 import za.org.grassroot.core.domain.association.AssociationRequestEvent;
 import za.org.grassroot.core.enums.AssocRequestEventType;
@@ -19,7 +19,7 @@ import za.org.grassroot.core.repository.AccountSponsorshipRequestRepository;
 import za.org.grassroot.core.repository.AssociationRequestEventRepository;
 import za.org.grassroot.core.repository.UserRepository;
 import za.org.grassroot.core.util.DebugUtil;
-import za.org.grassroot.integration.email.EmailSendingBroker;
+import za.org.grassroot.integration.messaging.MessagingServiceBroker;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -27,7 +27,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import static org.springframework.data.jpa.domain.Specifications.where;
-import static za.org.grassroot.services.specifications.SponsorRequestSpecifications.*;
+import static za.org.grassroot.core.specifications.SponsorRequestSpecifications.*;
 
 /**
  * Created by luke on 2017/02/06.
@@ -48,22 +48,18 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
     private final AccountSponsorshipRequestRepository requestRepository;
     private final AssociationRequestEventRepository requestEventRepository;
     private final AccountEmailService accountEmailService;
-    private EmailSendingBroker emailSendingBroker;
+    private final MessagingServiceBroker messageBroker;
 
     @Autowired
     public AccountSponsorshipBrokerImpl(UserRepository userRepository, AccountRepository accountRepository,
                                         AccountSponsorshipRequestRepository requestRepository, AssociationRequestEventRepository requestEventRepository,
-                                        AccountEmailService emailService) {
+                                        AccountEmailService emailService, MessagingServiceBroker messageBroker) {
         this.userRepository = userRepository;
         this.accountRepository = accountRepository;
         this.requestRepository = requestRepository;
         this.requestEventRepository = requestEventRepository;
         this.accountEmailService = emailService;
-    }
-
-    @Autowired(required = false)
-    public void setEmailSendingBroker(EmailSendingBroker emailSendingBroker) {
-        this.emailSendingBroker = emailSendingBroker;
+        this.messageBroker = messageBroker;
     }
 
     @Override
@@ -91,7 +87,7 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
         AccountSponsorshipRequest request;
 
         if (hasUserBeenAskedToSponsor(destinationUserUid, accountUid)) {
-            logger.info("Refreshing an existing sponsorship request ..."); // todo : may want to limit this in future (prevent nagging)
+            logger.info("Refreshing an existing sponsorship request ...");
             priorRequestExists = true;
             request = requestRepository.findOne(where(forAccount(account))
                     .and(toUser(requestedUser))
@@ -110,10 +106,12 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
         }
 
         final String requestLink = urlForResponse + "?requestUid=" + request.getUid();
-        emailSendingBroker.sendMail(accountEmailService.createSponsorshipRequestMail(request, openingUser, messageToUser, priorRequestExists));
+        messageBroker.sendEmail(Collections.singletonList(requestedUser.getEmailAddress()),
+                accountEmailService.createSponsorshipRequestMail(request, openingUser, messageToUser, priorRequestExists));
 
         if (!StringUtils.isEmpty(openingUser.getEmailAddress())) {
-            emailSendingBroker.sendMail(accountEmailService.openingUserEmail(priorRequestExists, requestLink, requestedUser.getName(), openingUser));
+            messageBroker.sendEmail(Collections.singletonList(openingUser.getEmailAddress()),
+                    accountEmailService.openingUserEmail(priorRequestExists, requestLink, requestedUser.getName(), openingUser));
         }
     }
 
@@ -142,7 +140,8 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
         requestEventRepository.save(new AssociationRequestEvent(AssocRequestEventType.DECLINED, request,
                 request.getDestination(), Instant.now()));
 
-        emailSendingBroker.sendMail(accountEmailService.sponsorshipDeniedEmail(request));
+        messageBroker.sendEmail(Collections.singletonList(request.getRequestor().getBillingUser().getEmailAddress()),
+                accountEmailService.sponsorshipDeniedEmail(request));
     }
 
     @Override
@@ -172,7 +171,12 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
         AccountSponsorshipRequest approvedRequest = closeRequests(true, user, requests);
 
         if (approvedRequest != null) {
-            emailSendingBroker.sendMail(accountEmailService.sponsorshipApprovedEmail(approvedRequest));
+            List<String> addresses = approvedRequest.getRequestor().getAdministrators()
+                    .stream()
+                    .filter(u -> !StringUtils.isEmpty(u.getEmailAddress()) && !u.equals(approvedRequest.getDestination()))
+                    .map(User::getEmailAddress).collect(Collectors.toList());
+
+            messageBroker.sendEmail(addresses, accountEmailService.sponsorshipApprovedEmail(approvedRequest));
         }
     }
 
@@ -211,10 +215,11 @@ public class AccountSponsorshipBrokerImpl implements AccountSponsorshipBroker {
             requestEventRepository.save(new AssociationRequestEvent(AssocRequestEventType.ABORTED, request,
                     request.getDestination(), Instant.now()));
 
-            emailSendingBroker.sendMail(accountEmailService.sponsorshipReminderEmailSponsor(request));
+            messageBroker.sendEmail(Collections.singletonList(request.getDestination().getEmailAddress()),
+                    accountEmailService.sponsorshipReminderEmailSponsor(request));
 
             accountEmailService.sponsorshipReminderEmailRequestor(request)
-                    .forEach(emailSendingBroker::sendMail);
+                    .forEach(e -> messageBroker.sendEmail(Collections.singletonList(e.getAddress()), e));
         }
     }
 

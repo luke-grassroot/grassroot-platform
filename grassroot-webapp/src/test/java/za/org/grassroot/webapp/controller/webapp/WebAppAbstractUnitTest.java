@@ -12,6 +12,7 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import za.org.grassroot.core.domain.User;
+import za.org.grassroot.integration.NotificationService;
 import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.group.GroupBroker;
@@ -34,7 +35,7 @@ import java.util.ArrayList;
 public abstract class WebAppAbstractUnitTest {
 
     protected final static String testUserPhone = "27815550000";
-    protected final static User sessionTestUser = new User("testUser", testUserPhone);
+    protected final static User sessionTestUser = new User("testUser", testUserPhone, null);
 
     protected MockMvc mockMvc;
 
@@ -56,6 +57,10 @@ public abstract class WebAppAbstractUnitTest {
     protected TaskBroker taskBrokerMock;
     @Mock
     protected AccountGroupBroker accountGroupBrokerMock;
+
+    @Mock
+    protected NotificationService notificationService;
+
 
     protected void setUp(BaseController baseController) {
         mockAuthentication();

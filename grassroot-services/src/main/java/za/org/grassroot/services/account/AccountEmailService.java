@@ -1,10 +1,10 @@
 package za.org.grassroot.services.account;
 
-import za.org.grassroot.core.domain.Account;
-import za.org.grassroot.core.domain.AccountBillingRecord;
+import za.org.grassroot.core.domain.account.Account;
+import za.org.grassroot.core.domain.account.AccountBillingRecord;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.association.AccountSponsorshipRequest;
-import za.org.grassroot.integration.email.GrassrootEmail;
+import za.org.grassroot.integration.messaging.GrassrootEmail;
 
 import java.util.Set;
 

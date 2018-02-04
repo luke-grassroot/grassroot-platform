@@ -9,7 +9,7 @@ import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.transaction.annotation.Transactional;
 import za.org.grassroot.TestContextConfiguration;
 import za.org.grassroot.core.GrassrootApplicationProfiles;
-import za.org.grassroot.core.domain.Address;
+import za.org.grassroot.core.domain.geo.Address;
 import za.org.grassroot.core.domain.User;
 
 import static org.junit.Assert.assertEquals;
@@ -40,7 +40,7 @@ public class AddressRepositoryTest {
     @Test
     public void shouldFindByResident() throws Exception{
 
-     User user = userRepository.save(new User("0833203013"));
+     User user = userRepository.save(new User("0833203013", null, null));
         addressRepository.save(new Address(user, testHouseNumber,testStreetName,testTown, true));
         Address address = addressRepository.findTopByResidentAndPrimaryTrueOrderByCreatedDateTimeDesc(user);
         assertNotNull(address);

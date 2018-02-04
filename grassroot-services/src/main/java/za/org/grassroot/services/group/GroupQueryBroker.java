@@ -1,10 +1,11 @@
 package za.org.grassroot.services.group;
 
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import za.org.grassroot.core.domain.Group;
 import za.org.grassroot.core.domain.GroupLog;
 import za.org.grassroot.core.domain.User;
-import za.org.grassroot.core.dto.GroupTreeDTO;
+import za.org.grassroot.core.dto.MembershipDTO;
 import za.org.grassroot.services.ChangedSinceData;
 
 import java.time.Instant;
@@ -51,8 +52,6 @@ public interface GroupQueryBroker {
 
     Set<Group> subGroups(String groupUid);
 
-    List<GroupTreeDTO> groupTree(String userUid);
-
     Set<Group> possibleParents(String userUid, String groupUid);
 
     LocalDateTime getLastTimeGroupActiveOrModified(String groupUid);
@@ -70,5 +69,9 @@ public interface GroupQueryBroker {
     /** TO CHECK IF GROUP IS PAID OR NOT **/
 
     boolean isGroupPaidFor(String groupUid);
+
+    long countMembershipsInGroups(User groupCreator, Instant groupCreatedAfter, Instant userJoinedAfter);
+
+    Page<MembershipDTO> getMembershipsInGroups(User groupCreator, Instant groupCreatedAfter, Instant userJoinedAfter, Pageable pageable);
 
 }

@@ -1,9 +1,9 @@
 package za.org.grassroot.core.domain.notification;
 
-import za.org.grassroot.core.domain.Account;
-import za.org.grassroot.core.domain.AccountLog;
 import za.org.grassroot.core.domain.Notification;
 import za.org.grassroot.core.domain.User;
+import za.org.grassroot.core.domain.account.Account;
+import za.org.grassroot.core.domain.account.AccountLog;
 import za.org.grassroot.core.enums.NotificationDetailedType;
 import za.org.grassroot.core.enums.NotificationType;
 
@@ -22,8 +22,10 @@ public abstract class AccountNotification extends Notification {
 	}
 
 	public AccountNotification(User destination, String message, AccountLog accountLog) {
-		super(destination, message, accountLog, false);
-		this.account = accountLog.getAccount();
+        super(destination, message, accountLog);
+//        this.deliveryChannel = DeliveryRoute.SMS;
+        this.account = accountLog.getAccount();
+		this.setUseOnlyFreeChannels(true);
 	}
 
 	@Override

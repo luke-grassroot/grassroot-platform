@@ -10,9 +10,9 @@ import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringRunner;
 import za.org.grassroot.TestContextConfiguration;
 import za.org.grassroot.core.GrassrootApplicationProfiles;
-import za.org.grassroot.core.domain.Account;
+import za.org.grassroot.core.domain.account.Account;
 import za.org.grassroot.core.domain.Group;
-import za.org.grassroot.core.domain.PaidGroup;
+import za.org.grassroot.core.domain.account.PaidGroup;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.enums.AccountBillingCycle;
 import za.org.grassroot.core.enums.AccountType;
@@ -57,7 +57,7 @@ public class PaidGroupRepositoryTest {
     @Before
     public void setUp() throws Exception {
 
-        testUser = userRepository.save(new User(testPhoneNumber));
+        testUser = userRepository.save(new User(testPhoneNumber, null, null));
         testGroup = groupRepository.save(new Group(testGroupName, testUser));
         testGroup2 = groupRepository.save(new Group(testGroupName + "2", testUser));
         testAccount = accountRepository.save(new Account(testUser, testAccountName, AccountType.STANDARD, testUser, null, AccountBillingCycle.MONTHLY));

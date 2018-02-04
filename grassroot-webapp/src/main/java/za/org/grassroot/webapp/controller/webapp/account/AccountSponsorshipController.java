@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
-import za.org.grassroot.core.domain.Account;
+import za.org.grassroot.core.domain.account.Account;
 import za.org.grassroot.core.domain.User;
 import za.org.grassroot.core.domain.association.AccountSponsorshipRequest;
 import za.org.grassroot.core.enums.AccountBillingCycle;
@@ -74,7 +74,8 @@ public class AccountSponsorshipController extends BaseController {
                             accountUid, displayName, phoneNumber, emailAddress, messageToSponsor);
                 } else {
                     destinationUid = destination.getUid();
-                    userManagementService.updateEmailAddress(destinationUid, emailAddress);
+                    // todo : find other way to do this
+                    userManagementService.updateEmailAddress(null, destinationUid, emailAddress);
                 }
             } else {
                 destinationUid = userManagementService.create(phoneNumber, displayName, emailAddress);

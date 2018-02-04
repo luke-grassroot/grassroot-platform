@@ -15,23 +15,29 @@ import org.springframework.util.StringUtils;
 import za.org.grassroot.core.domain.*;
 import za.org.grassroot.core.domain.geo.GeoLocation;
 import za.org.grassroot.core.domain.notification.*;
+import za.org.grassroot.core.domain.task.*;
 import za.org.grassroot.core.dto.ResponseTotalsDTO;
 import za.org.grassroot.core.enums.*;
 import za.org.grassroot.core.repository.*;
+import za.org.grassroot.core.specifications.EventSpecifications;
 import za.org.grassroot.core.util.DateTimeUtil;
 import za.org.grassroot.services.MessageAssemblingService;
 import za.org.grassroot.services.PermissionBroker;
 import za.org.grassroot.services.account.AccountGroupBroker;
-import za.org.grassroot.services.enums.EventListTimeType;
 import za.org.grassroot.services.exception.AccountLimitExceededException;
 import za.org.grassroot.services.exception.EventStartTimeNotInFutureException;
 import za.org.grassroot.services.exception.TaskNameTooLongException;
 import za.org.grassroot.services.geo.GeoLocationBroker;
-import za.org.grassroot.services.specifications.EventSpecifications;
+import za.org.grassroot.services.task.enums.EventListTimeType;
 import za.org.grassroot.services.util.CacheUtilService;
 import za.org.grassroot.services.util.LogsAndNotificationsBroker;
 import za.org.grassroot.services.util.LogsAndNotificationsBundle;
 
+import javax.persistence.EntityManager;
+import javax.persistence.Tuple;
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.CriteriaQuery;
+import javax.persistence.criteria.Root;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -40,8 +46,8 @@ import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import static za.org.grassroot.core.domain.EventReminderType.CUSTOM;
-import static za.org.grassroot.core.domain.EventReminderType.DISABLED;
+import static za.org.grassroot.core.domain.task.EventReminderType.CUSTOM;
+import static za.org.grassroot.core.domain.task.EventReminderType.DISABLED;
 import static za.org.grassroot.core.enums.EventLogType.*;
 import static za.org.grassroot.core.util.DateTimeUtil.convertToSystemTime;
 import static za.org.grassroot.core.util.DateTimeUtil.getSAST;
@@ -69,8 +75,10 @@ public class EventBrokerImpl implements EventBroker {
 	private final GeoLocationBroker geoLocationBroker;
 	private final TaskImageBroker taskImageBroker;
 
+	private final EntityManager entityManager;
+
 	@Autowired
-	public EventBrokerImpl(MeetingRepository meetingRepository, EventLogBroker eventLogBroker, EventRepository eventRepository, VoteRepository voteRepository, UidIdentifiableRepository uidIdentifiableRepository, UserRepository userRepository, AccountGroupBroker accountGroupBroker, GroupRepository groupRepository, PermissionBroker permissionBroker, LogsAndNotificationsBroker logsAndNotificationsBroker, CacheUtilService cacheUtilService, MessageAssemblingService messageAssemblingService, MeetingLocationRepository meetingLocationRepository, GeoLocationBroker geoLocationBroker, TaskImageBroker taskImageBroker) {
+	public EventBrokerImpl(MeetingRepository meetingRepository, EventLogBroker eventLogBroker, EventRepository eventRepository, VoteRepository voteRepository, UidIdentifiableRepository uidIdentifiableRepository, UserRepository userRepository, AccountGroupBroker accountGroupBroker, GroupRepository groupRepository, PermissionBroker permissionBroker, LogsAndNotificationsBroker logsAndNotificationsBroker, CacheUtilService cacheUtilService, MessageAssemblingService messageAssemblingService, MeetingLocationRepository meetingLocationRepository, GeoLocationBroker geoLocationBroker, TaskImageBroker taskImageBroker,EntityManager entityManager) {
 		this.meetingRepository = meetingRepository;
 		this.eventLogBroker = eventLogBroker;
 		this.eventRepository = eventRepository;
@@ -85,6 +93,7 @@ public class EventBrokerImpl implements EventBroker {
 		this.messageAssemblingService = messageAssemblingService;
 		this.geoLocationBroker = geoLocationBroker;
 		this.taskImageBroker = taskImageBroker;
+		this.entityManager = entityManager;
 	}
 
 	@Override
@@ -128,6 +137,7 @@ public class EventBrokerImpl implements EventBroker {
 		logger.info("Created meeting, with importance={}, reminder type={} and time={}", meeting.getImportance(), meeting.getReminderType(), meeting.getScheduledReminderTime());
 
 		meetingRepository.save(meeting);
+
 		eventLogBroker.rsvpForEvent(meeting.getUid(), meeting.getCreatedByUser().getUid(), EventRSVPResponse.YES);
 
 		LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
@@ -148,6 +158,11 @@ public class EventBrokerImpl implements EventBroker {
 		return meeting;
 	}
 
+	@Override
+	public List<Meeting> publicMeetingsUserIsNotPartOf(String term, User user){
+		return meetingRepository.publicMeetingsUserIsNotPartOfWithsSearchTerm(term, user);
+	}
+
 	private void checkForEventLimit(String parentUid) {
 		if (eventMonthlyLimitActive && accountGroupBroker.numberEventsLeftForGroup(parentUid) < 1) {
 			throw new AccountLimitExceededException();
@@ -155,7 +170,6 @@ public class EventBrokerImpl implements EventBroker {
 	}
 
 	// introducing so that we can check catch & handle duplicate requests (e.g., from malfunctions on Android client offline->queue->sync function)
-	@Transactional(readOnly = true)
 	private Event checkForDuplicate(String userUid, String parentGroupUid, String name, Instant startDateTime) {
 		Objects.requireNonNull(userUid);
 		Objects.requireNonNull(parentGroupUid);
@@ -181,12 +195,12 @@ public class EventBrokerImpl implements EventBroker {
 			notifications.add(notification);
 		}
 		// check if creating user is on Android, in which case, add an explicit SMS
-		if (event.getCreatedByUser().getMessagingPreference().equals(UserMessagingPreference.ANDROID_APP)) {
-			logger.info("event creator on Android, sending an SMS so they know format");
+		if (event.getCreatedByUser().getMessagingPreference().equals(DeliveryRoute.ANDROID_APP)) {
+			logger.debug("event creator on Android, sending an SMS so they know format");
 			User creator = event.getCreatedByUser();
 			String creatorMessage = messageAssemblingService.createEventInfoMessage(creator, event);
 			Notification smsNotification = new EventInfoNotification(creator, creatorMessage, eventLog);
-			smsNotification.setForAndroidTimeline(false);
+			smsNotification.setDeliveryChannel(DeliveryRoute.SMS);
 			notifications.add(smsNotification);
 		}
 		return notifications;
@@ -350,7 +364,7 @@ public class EventBrokerImpl implements EventBroker {
 	@Override
 	@Transactional
 	public Vote createVote(String userUid, String parentUid, JpaEntityType parentType, String name, LocalDateTime eventStartDateTime,
-						   boolean includeSubGroups, String description, Set<String> assignMemberUids, List<String> options) {
+                           boolean includeSubGroups, String description, Set<String> assignMemberUids, List<String> options) {
 		Objects.requireNonNull(userUid);
 		Objects.requireNonNull(parentUid);
 		Objects.requireNonNull(parentType);
@@ -829,7 +843,7 @@ public class EventBrokerImpl implements EventBroker {
 							&& ((eventType == EventType.MEETING && event.getCreatedByUser().getId() != user.getId())
 							|| eventType != EventType.MEETING);
 			// todo: well, fix this (consolidate into one criteria query)
-			groupRepository.findByMembershipsUserAndActiveTrue(user)
+			groupRepository.findByMembershipsUserAndActiveTrueAndParentIsNull(user)
 					.forEach(g -> g.getUpcomingEventsIncludingParents(filter)
 							.stream()
 							.filter(e -> eventType == EventType.MEETING || checkUserJoinedBeforeVote(user, e, g))
@@ -911,6 +925,22 @@ public class EventBrokerImpl implements EventBroker {
 	public Event getMostRecentEvent(String groupUid) {
 		Group group = groupRepository.findOneByUid(groupUid);
 		return eventRepository.findTopByParentGroupAndEventStartDateTimeNotNullOrderByEventStartDateTimeDesc(group);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public String getMostFrequentLocation(String groupUid) {
+		Group group = groupRepository.findOneByUid(groupUid);
+		CriteriaBuilder cb  = entityManager.getCriteriaBuilder();
+		CriteriaQuery<Tuple> query = cb.createTupleQuery();
+		Root<Meeting> root  = query.from(Meeting.class);
+		query.multiselect(root.get(Meeting_.eventLocation), cb.count(root.get(Meeting_.eventLocation)));
+		query.where(cb.equal(root.get(Meeting_.ancestorGroup), group));
+		query.groupBy(root.get(Meeting_.eventLocation));
+		query.orderBy(cb.desc(cb.count(root.get(Meeting_.eventLocation))));
+		List<Tuple> results = entityManager.createQuery(query).getResultList();
+		logger.info("results of query: {}", results);
+		return results != null && !results.isEmpty() ? (String) results.get(0).get(0) : "";
 	}
 
 	@Override

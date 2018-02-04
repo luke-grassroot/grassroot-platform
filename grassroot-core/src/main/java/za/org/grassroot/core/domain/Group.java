@@ -1,10 +1,10 @@
 package za.org.grassroot.core.domain;
 
+import lombok.Getter;
 import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.Type;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import za.org.grassroot.core.domain.geo.GroupLocation;
+import za.org.grassroot.core.domain.task.*;
 import za.org.grassroot.core.enums.GroupDefaultImage;
 import za.org.grassroot.core.util.DateTimeUtil;
 import za.org.grassroot.core.util.UIDGenerator;
@@ -20,12 +20,12 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import static za.org.grassroot.core.util.FormatUtil.removeUnwantedCharacters;
+
 @Entity
 @Table(name = "group_profile") // quoting table name in case "group" is a reserved keyword
 @DynamicUpdate
-public class Group implements TodoContainer, VoteContainer, MeetingContainer, Serializable, Comparable<Group> {
-
-    private static final Logger logger = LoggerFactory.getLogger(Group.class);
+public class Group implements TodoContainer, VoteContainer, MeetingContainer, Serializable, Comparable<Group>, TagHolder {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -38,14 +38,21 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     @Column(name = "name", nullable = false, length = 50)
     private String groupName;
 
-    @Column(name = "created_date_time", insertable = true, updatable = false)
+    @Column(name = "created_date_time", updatable = false)
     private Instant createdDateTime;
+
+    // so, the next two are denormalizing, but we access this property _a lot_, and the joins are starting to bite
+    // never use it for anything core or that requires a lot of data integrity, only for sorting etc
+    @Column(name = "last_task_creation_time")
+    private Instant lastTaskCreationTime;
+
+    @Column(name = "last_log_creation_time")
+    private Instant lastGroupChangeTime;
 
     @ManyToOne()
     @JoinColumn(name = "created_by_user", nullable = false, updatable = false)
     private User createdByUser;
 
-    // todo : add @LazyCollection(LazyCollectionOption.EXTRA) [needs a lot of testing...]
     @OneToMany(cascade = CascadeType.ALL, mappedBy = "group", orphanRemoval = true)
     private Set<Membership> memberships = new HashSet<>();
 
@@ -156,6 +163,12 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     @Type(type = "za.org.grassroot.core.util.StringArrayUserType")
     private String[] tags;
 
+    @OneToMany(mappedBy = "group")
+    @Getter private Set<GroupJoinCode> groupJoinCodes = new HashSet<>();
+
+    // @OneToMany(mappedBy = "masterGroup")
+    // private List<Campaign> campaign;
+
     private Group() {
         // for JPA
     }
@@ -165,10 +178,12 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     }
 
     public Group(String groupName, User createdByUser, Group parent) {
+        Objects.requireNonNull(groupName);
         this.uid = UIDGenerator.generateId();
-        this.groupName = Objects.requireNonNull(groupName);
+        this.groupName = removeUnwantedCharacters(groupName);
         this.createdByUser = Objects.requireNonNull(createdByUser);
         this.createdDateTime = Instant.now();
+        this.lastGroupChangeTime = this.createdDateTime;
         this.active = true;
         this.discoverable = true; // make groups discoverable by default
         this.joinApprover = createdByUser; // discoverable groups need a join approver, defaulting to creating user
@@ -176,7 +191,6 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
         this.reminderMinutes = 24 * 60; // defaults to a day
         this.description = ""; // at some point may want to add to the constructor
         this.defaultImage = GroupDefaultImage.SOCIAL_MOVEMENT;
-        // this.tags = new String[0];
 
         if (parent != null) {
             parent.addChildGroup(this);
@@ -219,7 +233,7 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     }
 
     public void setGroupName(String groupName) {
-        this.groupName = groupName;
+        this.groupName = removeUnwantedCharacters(groupName);
     }
 
     public Long getId() {
@@ -269,18 +283,14 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
         }
     }
 
-    public Set<Membership> addMembers(Collection<User> newMembers, String roleName) {
+    public Set<Membership> addMembers(Collection<User> newMembers, String roleName, GroupJoinMethod joinMethod, String joinMethodDescriptor) {
         Objects.requireNonNull(roleName);
-        Role role = getRole(roleName);
-        return addMembers(newMembers, role);
-    }
-
-    public Set<Membership> addMembers(Collection<User> newMembers, Role role) {
         Objects.requireNonNull(newMembers);
 
+        Role role = getRole(roleName);
         Set<Membership> memberships = new HashSet<>();
         for (User newMember : newMembers) {
-            Membership membership = addMember(newMember, role);
+            Membership membership = addMemberInternal(newMember, role, joinMethod, joinMethodDescriptor);
             if (membership != null) {
                 memberships.add(membership);
             }
@@ -288,24 +298,24 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
         return memberships;
     }
 
-    public Membership addMember(User newMember) {
-        return addMember(newMember, BaseRoles.ROLE_ORDINARY_MEMBER);
-    }
 
-    public Membership addMember(User newMember, String roleName) {
+    public Membership addMember(User newMember, String roleName, GroupJoinMethod joinMethod, String joinMethodDescriptor) {
         Objects.requireNonNull(roleName);
         Role role = getRole(roleName);
-        return addMember(newMember, role);
+        return addMemberInternal(newMember, role, joinMethod, joinMethodDescriptor);
     }
 
-    public Membership addMember(User newMember, Role role) {
+
+    private Membership addMemberInternal(User newMember, Role role, GroupJoinMethod joinMethod, String joinMethodDescriptor) {
+
         Objects.requireNonNull(newMember);
         Objects.requireNonNull(role);
 
         if (!getGroupRoles().contains(role)) {
             throw new IllegalArgumentException("Role " + role + " is not one of roles belonging to group: " + this);
         }
-        Membership membership = new Membership(this, newMember, role, Instant.now());
+        Membership membership = new Membership(this, newMember, role, Instant.now(), joinMethod,
+                joinMethodDescriptor);
         boolean added = this.memberships.add(membership);
         if (added) {
             newMember.addMappedByMembership(membership);
@@ -315,7 +325,7 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     }
 
     public Membership removeMember(User member) {
-        Membership membership = getMembership(member);
+        Membership membership = getMembership(member.getUid());
         if (membership == null) {
             return null;
         }
@@ -341,11 +351,18 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
         this.memberships.removeAll(memberships);
     }
 
+
     public Membership getMembership(User user) {
         Objects.requireNonNull(user);
 
+        return this.getMembership(user.getUid());
+    }
+
+    public Membership getMembership(String userUid) {
+        Objects.requireNonNull(userUid);
+
         for (Membership membership : memberships) {
-            if (membership.getUser().equals(user)) {
+            if (membership.getUser().getUid().equals(userUid)) {
                 return membership;
             }
         }
@@ -362,7 +379,7 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
 
     public boolean hasMember(User user) {
         Objects.requireNonNull(user);
-        Membership membership = getMembership(user);
+        Membership membership = getMembership(user.getUid());
         return membership != null;
     }
 
@@ -396,6 +413,27 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
 
     public void setTokenExpiryDateTime(Instant tokenExpiryDateTime) {
         this.tokenExpiryDateTime = tokenExpiryDateTime;
+    }
+
+    public Instant getLastTaskCreationTime() {
+        return lastTaskCreationTime;
+    }
+
+    public void setLastTaskCreationTime(Instant lastTaskCreationTime) {
+        this.lastTaskCreationTime = lastTaskCreationTime;
+    }
+
+    public Instant getLastGroupChangeTime() {
+        return lastGroupChangeTime;
+    }
+
+    public void setLastGroupChangeTime(Instant lastGroupChangeTime) {
+        this.lastGroupChangeTime = lastGroupChangeTime;
+    }
+
+    public Instant getLatestChangeOrTaskTime() {
+        return lastTaskCreationTime == null || lastTaskCreationTime.isBefore(lastGroupChangeTime) ?
+                lastGroupChangeTime : lastTaskCreationTime;
     }
 
     public boolean hasValidGroupTokenCode() {
@@ -515,7 +553,6 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     public String getDefaultLanguage() {
         return defaultLanguage;
     }
-
     public void setDefaultLanguage(String defaultLanguage) {
         this.defaultLanguage = defaultLanguage;
     }
@@ -569,7 +606,6 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
     public GroupDefaultImage getDefaultImage() { return defaultImage; }
 
     public void setDefaultImage(GroupDefaultImage defaultImage) { this.defaultImage = defaultImage; }
-
 
     public Set<Role> getGroupRoles() {
         if (groupRoles == null) {
@@ -675,6 +711,11 @@ public class Group implements TodoContainer, VoteContainer, MeetingContainer, Se
         }
     }
 
+    /* public List<Campaign> getCampaign() {
+        return campaign;
+    }*/
 
-
+    /* public void setCampaign(List<Campaign> campaign) {
+        this.campaign = campaign;
+    }*/
 }

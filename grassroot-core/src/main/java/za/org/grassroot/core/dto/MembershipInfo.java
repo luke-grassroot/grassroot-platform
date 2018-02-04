@@ -3,32 +3,48 @@ package za.org.grassroot.core.dto;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.swagger.annotations.ApiModel;
+import io.swagger.annotations.ApiModelProperty;
+import lombok.Getter;
+import lombok.Setter;
+import org.apache.commons.validator.routines.EmailValidator;
 import org.springframework.util.StringUtils;
 import za.org.grassroot.core.domain.Membership;
 import za.org.grassroot.core.domain.Role;
 import za.org.grassroot.core.domain.User;
+import za.org.grassroot.core.enums.Province;
 import za.org.grassroot.core.util.InvalidPhoneNumberException;
 import za.org.grassroot.core.util.PhoneNumberUtil;
 
-import java.util.HashSet;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Represents all info needed to add new member.
  * Only phone number is required.
  */
+@ApiModel(value = "MembershipInfo", description = "Set of information, principally name, phone number and/or email")
+@Getter @Setter
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class MembershipInfo implements Comparable<MembershipInfo> {
 
     // note: removing 'final' so Thymeleaf can populate this (can find a better way if needed)
-    private String phoneNumber;
-    private String roleName; // optional
-    private String displayName; // optional
-    private boolean userSetName;
+    protected String userUid; // for optionality
+    protected String phoneNumber;
+
+    @ApiModelProperty(allowEmptyValue = true)
+    protected String roleName; // optional
+
+    protected String displayName; // optional
+    protected boolean userSetName;
+
+    protected String memberEmail;
+    protected Province province;
+
+    protected List<String> topics;
+    protected List<String> affiliations;
 
     public MembershipInfo() {
-        // need empty constructor for Spring MVC form submission
+        // need empty constructor for Spring MVC form submission, and for the Excel parsing
     }
 
     @JsonCreator
@@ -41,11 +57,15 @@ public class MembershipInfo implements Comparable<MembershipInfo> {
     }
 
     // constructor to create a membership info with an empty role
-    public MembershipInfo(User user, String displayName, String roleName) {
+    public MembershipInfo(User user, String displayName, String roleName, List<String> assignedTopics) {
         this.phoneNumber = user.getPhoneNumber();
+        this.memberEmail = user.getEmailAddress();
         this.displayName = displayName;
         this.userSetName = user.isHasSetOwnName();
         this.roleName = roleName;
+        this.userUid = user.getUid();
+        this.province = user.getProvince();
+        this.topics = assignedTopics == null ? new ArrayList<>() : assignedTopics;
     }
 
     public static MembershipInfo makeEmpty() {
@@ -54,53 +74,60 @@ public class MembershipInfo implements Comparable<MembershipInfo> {
 
     public static Set<MembershipInfo> createFromMembers(Set<Membership> members) {
         Set<MembershipInfo> membershipInfoSet = new HashSet<>();
-        members.forEach(m -> membershipInfoSet.add(new MembershipInfo(m.getUser(), m.getDisplayName(), m.getRole().getName())));
+        members.forEach(m -> membershipInfoSet.add(new MembershipInfo(m.getUser(), m.getDisplayName(), m.getRole().getName(),
+                m.getTopics())));
         return membershipInfoSet;
-    }
-
-    public String getPhoneNumber() {
-        return phoneNumber;
-    }
-
-    public String getRoleName() {
-        return roleName;
-    }
-
-    public String getDisplayName() {
-        return displayName;
-    }
-
-    // need to add setters so that Thymeleaf can fill the entities
-
-    public void setPhoneNumber(String phoneNumber) { this.phoneNumber = phoneNumber; }
-
-    public void setRoleName(String roleName) { this.roleName = roleName; }
-
-    public void setDisplayName(String displayName) { this.displayName = displayName; }
-
-    public boolean isUserSetName() {
-        return userSetName;
-    }
-
-    public void setUserSetName(boolean userSetName) {
-        this.userSetName = userSetName;
     }
 
     // need to use PhoneNumberUtil here to make sure return number with country code (or vice versa)
 
-    public String getPhoneNumberWithCCode() { return PhoneNumberUtil.convertPhoneNumber(phoneNumber); }
+    public String getPhoneNumberWithCCode() {
+        try {
+            return PhoneNumberUtil.convertPhoneNumber(phoneNumber);
+        }  catch (InvalidPhoneNumberException e) {
+            return phoneNumber;
+        }
+    }
 
-    public String getPhoneNumberWithoutCCode() { return PhoneNumberUtil.invertPhoneNumber(phoneNumber); }
+    public String getPhoneNumberWithoutCCode() {
+        try {
+            return PhoneNumberUtil.invertPhoneNumber(phoneNumber);
+        } catch (Exception e) {
+            return phoneNumber;
+        }
+    }
 
-    public String getNationalFormattedNumber() { return PhoneNumberUtil.formattedNumber(phoneNumber); }
+    public String getNationalFormattedNumber() {
+        try {
+            return PhoneNumberUtil.formattedNumber(phoneNumber);
+        } catch (Exception e) {
+            return phoneNumber;
+        }
+    }
+
+    public boolean hasPhoneNumber() {
+        return !StringUtils.isEmpty(phoneNumber);
+    }
 
     public boolean hasValidPhoneNumber() {
+        if (StringUtils.isEmpty(phoneNumber)) {
+            return false;
+        }
+
         try {
-            getPhoneNumberWithCCode();
+            PhoneNumberUtil.convertPhoneNumber(phoneNumber);
             return true;
         } catch (InvalidPhoneNumberException e) {
             return false;
         }
+    }
+
+    public boolean hasValidEmail() {
+        return !StringUtils.isEmpty(memberEmail) && EmailValidator.getInstance().isValid(memberEmail);
+    }
+
+    public boolean hasValidPhoneOrEmail() {
+        return hasValidPhoneNumber() || hasValidEmail();
     }
 
     @Override
@@ -126,7 +153,8 @@ public class MembershipInfo implements Comparable<MembershipInfo> {
     @Override
     public String toString() {
         final StringBuilder sb = new StringBuilder("MembershipInfo{");
-        sb.append("phoneNumber='").append(phoneNumber).append('\'');
+        sb.append("province=").append(province);
+        sb.append(", phoneNumber='").append(phoneNumber).append('\'');
         sb.append(", roleName=").append(roleName);
         sb.append(", displayName='").append(displayName).append('\'');
         sb.append('}');

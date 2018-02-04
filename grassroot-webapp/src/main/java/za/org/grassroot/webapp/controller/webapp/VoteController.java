@@ -12,6 +12,8 @@ import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import za.org.grassroot.core.domain.*;
+import za.org.grassroot.core.domain.task.EventReminderType;
+import za.org.grassroot.core.domain.task.Vote;
 import za.org.grassroot.services.account.AccountGroupBroker;
 import za.org.grassroot.services.exception.AccountLimitExceededException;
 import za.org.grassroot.services.exception.EventStartTimeNotInFutureException;
@@ -136,7 +138,7 @@ public class VoteController extends BaseController {
         boolean canModify = (vote.getCreatedByUser().equals(getUserProfile())
                 && vote.getEventStartDateTime().isAfter(Instant.now())); // todo: make this more nuanced
 
-        Map<String, Long> voteTotals = voteBroker.fetchVoteResults(getUserProfile().getUid(), eventUid);
+        Map<String, Long> voteTotals = voteBroker.fetchVoteResults(getUserProfile().getUid(), eventUid, false);
         long totalResponses = voteTotals.values().stream().mapToLong(Long::longValue).sum();
         long possibleResponses = vote.getAllMembers().size();
 

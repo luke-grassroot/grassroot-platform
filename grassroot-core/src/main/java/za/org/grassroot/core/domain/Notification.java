@@ -1,13 +1,26 @@
 package za.org.grassroot.core.domain;
 
 
+import lombok.Getter;
+import lombok.Setter;
+import za.org.grassroot.core.domain.account.AccountLog;
+import za.org.grassroot.core.domain.campaign.CampaignLog;
+import za.org.grassroot.core.domain.livewire.LiveWireLog;
+import za.org.grassroot.core.domain.task.EventLog;
+import za.org.grassroot.core.domain.task.TodoLog;
+import za.org.grassroot.core.enums.DeliveryRoute;
+import za.org.grassroot.core.enums.MessagingProvider;
 import za.org.grassroot.core.enums.NotificationDetailedType;
 import za.org.grassroot.core.enums.NotificationType;
+import za.org.grassroot.core.enums.DeliveryRoute;
 import za.org.grassroot.core.util.UIDGenerator;
 
 import javax.persistence.*;
 import java.io.Serializable;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -18,6 +31,7 @@ import java.util.Objects;
 @Table(name = "notification")
 @Inheritance(strategy = InheritanceType.SINGLE_TABLE)
 @DiscriminatorColumn(name = "type", discriminatorType = DiscriminatorType.STRING)
+@Getter
 public abstract class Notification implements Serializable {
 	// default priority for notification is not overriden with getPriority();
 	private static final int DEFAULT_PRIORITY = 1;
@@ -33,18 +47,32 @@ public abstract class Notification implements Serializable {
 	@Column(name = "creation_time", insertable = true, updatable = false)
 	private Instant createdDateTime;
 
-	@Column(name = "next_attempt_time")
-	private Instant nextAttemptTime;
-
-	@Column(name = "last_attempt_time")
-	private Instant lastAttemptTime;
-
 	@Column(name = "attempt_count", nullable = false)
-	private int attemptCount = 0;
+	@Setter private int sendAttempts = 0;
 
 	@ManyToOne
 	@JoinColumn(name = "target_id")
 	private User target;
+
+	@Column(name = "sending_status")
+    @Enumerated(EnumType.STRING)
+    @Setter private NotificationStatus status = NotificationStatus.READY_FOR_SENDING;
+
+	@Setter
+	@Column(name = "send_only_after")
+	private Instant sendOnlyAfter;
+
+	@Column(name = "last_status_change")
+	private Instant lastStatusChange;
+
+    @Setter
+    @Column(name = "sending_key")
+    protected String sendingKey;
+
+	@Setter
+	@Column(name = "delivery_channel")
+    @Enumerated(EnumType.STRING)
+	protected DeliveryRoute deliveryChannel = DeliveryRoute.SMS; //defaults to SMS
 
 	@ManyToOne
 	@JoinColumn(name = "event_log_id")
@@ -52,11 +80,11 @@ public abstract class Notification implements Serializable {
 
 	@ManyToOne
 	@JoinColumn(name = "action_todo_log_id")
-	private TodoLog todoLog;
+	@Setter private TodoLog todoLog;
 
 	@ManyToOne
 	@JoinColumn(name = "group_log_id", foreignKey = @ForeignKey(name = "fk_notification_group_log"))
-	private GroupLog groupLog;
+	protected GroupLog groupLog;
 
 	@ManyToOne
 	@JoinColumn(name = "account_log_id", foreignKey = @ForeignKey(name = "fk_notification_account_log"))
@@ -70,20 +98,32 @@ public abstract class Notification implements Serializable {
 	@JoinColumn(name = "livewire_log_id", foreignKey = @ForeignKey(name = "fk_notification_livewire_log"))
 	private LiveWireLog liveWireLog;
 
-	@Column(name = "read")
-	private boolean read = false;
-
-	@Column(name = "delivered")
-	private boolean delivered = false;
-
-	@Column(name = "for_android_tl")
-	private boolean forAndroidTimeline = false;
-
-	@Column(name = "viewed_android")
-	private boolean viewedOnAndroid = false;
+	@ManyToOne
+	@JoinColumn(name = "campaign_log_id", foreignKey = @ForeignKey(name = "fk_notification_campaign_log"))
+	private CampaignLog campaignLog;
 
 	@Column(name = "message")
 	protected String message;
+
+	@Setter
+	@Column(name = "sent_via_provider")
+	@Enumerated(EnumType.STRING)
+	private MessagingProvider sentViaProvider = null;
+
+
+	@Setter
+	@Column(name = "read_receipt_fetches")
+	private int readReceiptFetchAttempts;
+
+	@Setter
+	@Column(name = "use_only_free_channels")
+	private boolean useOnlyFreeChannels = false;
+
+
+	@ElementCollection
+	@CollectionTable(name = "notification_error", joinColumns = @JoinColumn(name = "notification_id"))
+	private List<NotificationSendError> sendingErrors = new ArrayList<>();
+
 
 	@Transient
 	public int priority;
@@ -96,17 +136,20 @@ public abstract class Notification implements Serializable {
 		// for JPA
 	}
 
-	protected Notification(User target, String message, ActionLog actionLog, boolean forAndroidTL) {
+	protected Notification(User target, String message, ActionLog actionLog) {
 		this.uid = UIDGenerator.generateId();
-		this.read = false;
 
 		this.target = Objects.requireNonNull(target); // at least for now, Notifications are always targeted to a user
 		this.createdDateTime = Instant.now();
-		this.nextAttemptTime = createdDateTime; // default is to be sent immediately
+		this.lastStatusChange = createdDateTime;
 		this.message = Objects.requireNonNull(message);
-		this.priority = DEFAULT_PRIORITY;
+		this.readReceiptFetchAttempts = 0;
 
-		this.forAndroidTimeline = forAndroidTL;
+		if (this.message.length() > 255)
+			this.message = message.substring(0, 255);
+
+		this.priority = DEFAULT_PRIORITY;
+		this.deliveryChannel = target.getMessagingPreference();
 
 		if (actionLog instanceof EventLog) {
 			eventLog = (EventLog) actionLog;
@@ -120,126 +163,77 @@ public abstract class Notification implements Serializable {
 			userLog = (UserLog) actionLog;
 		} else if (actionLog instanceof LiveWireLog) {
 			liveWireLog = (LiveWireLog) actionLog;
+		} else if (actionLog instanceof CampaignLog) {
+			campaignLog = (CampaignLog) actionLog;
 		} else {
 			throw new IllegalArgumentException("Unsupported action log: " + actionLog);
 		}
+
 	}
 
-	public Long getId() {
-		return id;
+
+	/**
+	 * @param status                 status to be set
+	 * @param resultOfSendingAttempt if this status update is result of sending attempt should be true, otherwise false
+	 * @param resultOfReceiptFetch if this status update is result of getting a read receipt
+	 */
+	public void updateStatus(NotificationStatus status, boolean resultOfSendingAttempt, boolean resultOfReceiptFetch, String error) {
+		NotificationStatus oldStatus = this.status;
+		this.status = status;
+		this.lastStatusChange = Instant.now();
+		if (resultOfSendingAttempt)
+			this.sendAttempts++;
+		if (resultOfReceiptFetch)
+			this.readReceiptFetchAttempts++;
+		if (error != null) {
+			NotificationSendError sendError = new NotificationSendError(LocalDateTime.now(), error, oldStatus, status);
+			this.sendingErrors.add(sendError);
+		}
 	}
 
-	public String getUid() {
-		return uid;
+	// used in messaging service
+	public void incrementReceiptFetchCount() {
+		this.readReceiptFetchAttempts++;
 	}
 
-	public Instant getCreatedDateTime() {
-		return createdDateTime;
+	/**
+	 * @return group relevant for action that triggered this notification
+	 */
+	public Group getRelevantGroup() {
+
+		if (this.eventLog != null)
+			return eventLog.getEvent().getAncestorGroup();
+
+		else if (this.groupLog != null)
+			return this.groupLog.getGroup();
+
+		else if (this.todoLog != null)
+			return this.todoLog.getTodo().getAncestorGroup();
+
+		else if (this.accountLog != null)
+			return this.accountLog.getGroup();
+
+		else if (this.liveWireLog != null)
+			return this.liveWireLog.getAlert().getGroup();
+
+		else return null;
 	}
 
-	public User getTarget() {
-		return target;
-	}
 
 	public boolean isRead() {
-		return read;
-	}
-
-	public void setRead(boolean read) {
-		this.read = read;
+		return this.status == NotificationStatus.READ;
 	}
 
 	public boolean isDelivered() {
-		return nextAttemptTime == null;
-	}
-
-	public EventLog getEventLog() {
-		return eventLog;
-	}
-
-	public TodoLog getTodoLog() {
-		return todoLog;
-	}
-
-	public GroupLog getGroupLog() {
-		return groupLog;
-	}
-
-	public AccountLog getAccountLog() {
-		return accountLog;
-	}
-
-	public UserLog getUserLog() {
-		return userLog;
-	}
-
-	public LiveWireLog getLiveWireLog() { return liveWireLog; }
-
-	public String getMessage() {
-		return message;
-	}
-
-	public Instant getNextAttemptTime() {
-		return nextAttemptTime;
-	}
-
-	public void setNextAttemptTime(Instant nextAttemptTime) {
-		this.nextAttemptTime = nextAttemptTime;
-	}
-
-	public void markAsDelivered() {
-		this.delivered = true;
-		this.nextAttemptTime = null;
-	}
-
-	public int getAttemptCount() {
-		return attemptCount;
-	}
-
-	public void incrementAttemptCount() {
-		this.attemptCount++;
-	}
-
-	public Instant getLastAttemptTime() {
-		return lastAttemptTime;
-	}
-
-	public void setLastAttemptTime(Instant lastAttemptTime) {
-		this.lastAttemptTime = lastAttemptTime;
-	}
-
-	public int getPriority() {
-		return priority;
-	}
-
-	public void setPriority(int priority){
-		this.priority = priority;
+		return this.status == NotificationStatus.DELIVERED || this.status == NotificationStatus.READ;
 	}
 
 	public boolean isViewedOnAndroid() {
-		return viewedOnAndroid;
-	}
-
-	public void setViewedOnAndroid(boolean viewedOnAndroid) {
-		this.viewedOnAndroid = viewedOnAndroid;
-	}
-
-	public boolean isForAndroidTimeline() {
-		return forAndroidTimeline;
-	}
-
-	public void setForAndroidTimeline(boolean forAndroidTimeline) {
-		this.forAndroidTimeline = forAndroidTimeline;
-	}
-
-	public void markReadAndViewed() {
-		this.delivered = true;
-		this.read = true;
-		this.viewedOnAndroid = true;
+		return this.deliveryChannel == DeliveryRoute.ANDROID_APP && this.status == NotificationStatus.READ;
 	}
 
 	public boolean isPrioritySatisfiedByTarget() {
-		return getPriority() >= getTarget().getNotificationPriority();
+		return this.priority >= target.getNotificationPriority();
 	}
 
 	/**
@@ -273,12 +267,10 @@ public abstract class Notification implements Serializable {
 		sb.append(", uid='").append(uid).append('\'');
 		sb.append(", target=").append(target);
 		appendToString(sb);
-		sb.append(", attemptCount=").append(attemptCount);
-		sb.append(", delivered=").append(delivered);
-		sb.append(", read=").append(read);
+		sb.append(", sendAttempts=").append(sendAttempts);
+		sb.append(", status=").append(status);
 		sb.append(", createdDateTime=").append(createdDateTime);
-		sb.append(", nextAttemptTime=").append(nextAttemptTime);
-		sb.append(", lastAttemptTime=").append(lastAttemptTime);
+		sb.append(", lastStatusChange=").append(lastStatusChange);
 		sb.append('}');
 		return sb.toString();
 	}

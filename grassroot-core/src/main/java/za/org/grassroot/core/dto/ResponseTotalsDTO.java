@@ -1,7 +1,7 @@
 package za.org.grassroot.core.dto;
 
-import za.org.grassroot.core.domain.Event;
-import za.org.grassroot.core.domain.EventLog;
+import za.org.grassroot.core.domain.task.Event;
+import za.org.grassroot.core.domain.task.EventLog;
 import za.org.grassroot.core.enums.EventRSVPResponse;
 
 import java.io.Serializable;
@@ -40,7 +40,9 @@ public class ResponseTotalsDTO implements Serializable {
         this.no = (int) eventLogs.stream().filter(el -> el.getResponse().equals(EventRSVPResponse.NO)).count();
         this.maybe = (int) eventLogs.stream().filter(el -> el.getResponse().equals(EventRSVPResponse.MAYBE)).count();
         this.invalid = (int) eventLogs.stream().filter(el -> el.getResponse().equals(EventRSVPResponse.INVALID_RESPONSE)).count();
-        this.numberOfUsers = event.getAllMembers().size();
+        this.numberOfUsers = event.isAllGroupMembersAssigned() || event.getAllMembers() == null ?
+                event.getAncestorGroup().getMemberships().size() :
+                event.getAllMembers().size();
     }
 
     public int getNumberNoRSVP() {

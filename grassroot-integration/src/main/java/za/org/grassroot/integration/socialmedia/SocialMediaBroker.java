@@ -2,9 +2,13 @@ package za.org.grassroot.integration.socialmedia;
 
 import org.springframework.util.MultiValueMap;
 
+import java.util.List;
+
 public interface SocialMediaBroker {
 
     IntegrationListResponse getCurrentIntegrations(String userUid);
+
+    ManagedPagesResponse getManagedPages(String userUid, String providerId);
 
     ManagedPagesResponse getManagedFacebookPages(String userUid);
 
@@ -14,7 +18,7 @@ public interface SocialMediaBroker {
 
     ManagedPagesResponse completeIntegrationConnect(String userUid, String providerId, MultiValueMap<String, String> paramsToPass);
 
-    GenericPostResponse postToFacebook(FBPostBuilder post);
+    List<GenericPostResponse> postToFacebook(List<FBPostBuilder> posts);
 
     // returns null if no account, else returns its display name
     ManagedPage isTwitterAccountConnected(String userUid);

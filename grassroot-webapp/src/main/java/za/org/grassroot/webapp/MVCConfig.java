@@ -1,9 +1,11 @@
 package za.org.grassroot.webapp;
 
 import com.github.mxab.thymeleaf.extras.dataattribute.dialect.DataAttributeDialect;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.context.support.MessageSourceAccessor;
 import org.springframework.context.support.ResourceBundleMessageSource;
 import org.springframework.core.Ordered;
@@ -30,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  */
 
 @Configuration
-@ControllerAdvice
+@ControllerAdvice @Slf4j
 public class MVCConfig extends WebMvcConfigurerAdapter {
 
     private PasswordTokenService passwordTokenService;
@@ -66,15 +68,17 @@ public class MVCConfig extends WebMvcConfigurerAdapter {
 
 
     @Bean
+    @Profile({"localpg", "staging"})
     public WebMvcConfigurer corsConfigurer() {
         return new WebMvcConfigurerAdapter() {
             @Override
             public void addCorsMappings(CorsRegistry registry) {
-                registry.addMapping("/**").allowedOrigins("*").allowedMethods("*");
+                registry.addMapping("/**")
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        .allowedOrigins("*").allowedMethods("*");
             }
         };
     }
-
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {

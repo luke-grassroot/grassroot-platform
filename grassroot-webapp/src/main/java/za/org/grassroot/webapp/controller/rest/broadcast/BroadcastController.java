@@ -29,6 +29,7 @@ import za.org.grassroot.webapp.controller.rest.Grassroot2RestController;
 import javax.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @RestController @Grassroot2RestController
 @Api("/api/broadcast") @Slf4j
@@ -53,7 +54,7 @@ public class BroadcastController extends BaseRestController {
         Page<BroadcastDTO> broadcastDTOPage = new PageImpl<>(new ArrayList<>());
         if(broadcastSchedule.equals(BroadcastSchedule.IMMEDIATE)){
             broadcastDTOPage = broadcastBroker.fetchSentGroupBroadcasts(groupUid, pageable);
-        }else if(broadcastSchedule.equals(BroadcastSchedule.FUTURE))
+        } else if(broadcastSchedule.equals(BroadcastSchedule.FUTURE))
             broadcastDTOPage = broadcastBroker.fetchScheduledGroupBroadcasts(groupUid, pageable);
 
         return ResponseEntity.ok(broadcastDTOPage);
@@ -85,6 +86,7 @@ public class BroadcastController extends BaseRestController {
         String userUid = getUserIdFromRequest(request);
 
         BroadcastComponents bc = BroadcastComponents.builder()
+                .broadcastId(createRequest.getBroadcastId())
                 .title(createRequest.getTitle())
                 .userUid(userUid)
                 .groupUid(groupUid)
@@ -93,6 +95,11 @@ public class BroadcastController extends BaseRestController {
                 .scheduledSendTime(createRequest.getSendDateTime())
                 .provinces(createRequest.getProvinces())
                 .topics(createRequest.getTopics())
+                .taskTeams(createRequest.getTaskTeams())
+                .affiliations(createRequest.getAffiliations())
+                .joinMethods(createRequest.getJoinMethods())
+                .joinDateCondition(createRequest.getJoinDateCondition())
+                .joinDate(createRequest.getJoinDate())
                 .build();
 
         fillInContent(createRequest, bc);
@@ -143,7 +150,7 @@ public class BroadcastController extends BaseRestController {
         }
 
         if (createRequest.isPostToFacebook()) {
-            bc.setFacebookPost(generateFbPost(bc.getUserUid(), createRequest));
+            bc.setFacebookPosts(generateFbPosts(bc.getUserUid(), createRequest));
         }
 
         if (createRequest.isPostToTwitter()) {
@@ -160,14 +167,17 @@ public class BroadcastController extends BaseRestController {
                 .build();
     }
 
-    private FBPostBuilder generateFbPost(String userUid, BroadcastCreateRequest request) {
-        log.info("incoming FB page Id = {}", request.getFacebookPage());
-        return FBPostBuilder.builder()
-                .postingUserUid(userUid)
-                .facebookPageId(request.getFacebookPage())
-                .message(request.getFacebookContent())
-                .linkUrl(request.getFacebookLink())
-                .build();
+    private List<FBPostBuilder> generateFbPosts(String userUid, BroadcastCreateRequest request) {
+        log.info("incoming FB page Id = {}", request.getFacebookPages());
+        return request.getFacebookPages().stream().map(fbp ->
+            FBPostBuilder.builder()
+                    .postingUserUid(userUid)
+                    .facebookPageId(fbp)
+                    .message(request.getFacebookContent())
+                    .linkUrl(request.getFacebookLink())
+                    .linkName(request.getFacebookLinkCaption())
+                    .build()
+        ).collect(Collectors.toList());
     }
 
     private TwitterPostBuilder generateTweet(String userUid, BroadcastCreateRequest request) {

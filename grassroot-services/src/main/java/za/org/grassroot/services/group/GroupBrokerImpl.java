@@ -298,6 +298,95 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
     @Override
     @Transactional
+    public void addMembersToSubgroup(String userUid, String groupUid, String subGroupUid, Set<String> memberUids) {
+        User user = userRepository.findOneByUid(Objects.requireNonNull(userUid));
+        Group parent = groupRepository.findOneByUid(Objects.requireNonNull(groupUid));
+        Group subgroup = groupRepository.findOneByUid(Objects.requireNonNull(subGroupUid));
+
+        if (!parent.equals(subgroup.getParent())) {
+            throw new IllegalArgumentException("Error! Subgroup is not child of passed parent");
+        }
+
+        // must have subgroup create permission on parent group, or organizer permission on subgroup, to do this
+        if (!permissionBroker.isGroupPermissionAvailable(user, parent, Permission.GROUP_PERMISSION_CREATE_SUBGROUP) &&
+                !permissionBroker.isGroupPermissionAvailable(user, subgroup, Permission.GROUP_PERMISSION_ADD_GROUP_MEMBER)) {
+            throw new MemberLacksPermissionException(Permission.GROUP_PERMISSION_CREATE_SUBGROUP);
+        }
+
+        List<User> members = userRepository.findByUidIn(memberUids);
+        subgroup.addMembers(members, BaseRoles.ROLE_ORDINARY_MEMBER, GroupJoinMethod.ADDED_SUBGROUP, user.getName());
+
+        LogsAndNotificationsBundle bundle = new LogsAndNotificationsBundle();
+        createSubGroupAddedLogs(parent, subgroup, user, members, bundle);
+        storeBundleAfterCommit(bundle);
+    }
+
+    @Override
+    @Transactional
+    public void deactivateSubGroup(String userUid, String parentUid, String subGroupUid) {
+        User user = userRepository.findOneByUid(Objects.requireNonNull(userUid));
+        Group parent = groupRepository.findOneByUid(Objects.requireNonNull(parentUid));
+        Group subgroup = groupRepository.findOneByUid(Objects.requireNonNull(subGroupUid));
+
+        if (!parent.equals(subgroup.getParent())) {
+            throw new IllegalArgumentException("Subgroup is not related to parent");
+        }
+
+        try {
+            permissionBroker.validateGroupPermission(user, parent, Permission.GROUP_PERMISSION_DELINK_SUBGROUP);
+        } catch (AccessDeniedException e) {
+            throw new MemberLacksPermissionException(Permission.GROUP_PERMISSION_DELINK_SUBGROUP);
+        }
+
+        subgroup.setActive(false);
+
+        Set<ActionLog> actionLogs = new HashSet<>();
+        actionLogs.add(new GroupLog(subgroup, user, GroupLogType.GROUP_REMOVED, null));
+        actionLogs.add(new GroupLog(parent, user, GroupLogType.SUBGROUP_REMOVED, null, subgroup, null, null));
+
+        logActionLogsAfterCommit(actionLogs);
+    }
+
+    @Override
+    @Transactional
+    public void renameSubGroup(String userUid, String parentUid, String subGroupUid, String newName) {
+        User user = userRepository.findOneByUid(Objects.requireNonNull(userUid));
+        Group parent = groupRepository.findOneByUid(Objects.requireNonNull(parentUid));
+        Group subgroup = groupRepository.findOneByUid(Objects.requireNonNull(subGroupUid));
+
+        if (!parent.equals(subgroup.getParent())) {
+            throw new IllegalArgumentException("Subgroup is not related to parent");
+        }
+
+        if (!permissionBroker.isGroupPermissionAvailable(user, parent, Permission.GROUP_PERMISSION_AUTHORIZE_SUBGROUP) &&
+                !permissionBroker.isGroupPermissionAvailable(user, subgroup, Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS)) {
+            throw new MemberLacksPermissionException(Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS);
+        }
+
+        subgroup.setGroupName(newName);
+        logActionLogsAfterCommit(Collections.singleton(new GroupLog(parent, user, GroupLogType.SUBGROUP_RENAMED,
+                null, subgroup, null, newName)));
+    }
+
+    @Async
+    @Override
+    @Transactional
+    public void asyncMemberToSubgroupAdd(String userUid, String groupUid, Set<MembershipInfo> membershipInfos) {
+        logger.info("now wiring up sub group addition, should be off main thread");
+        Map<String, Set<String>> subgroupMap = new HashMap<>();
+        // probably a more elegant way to do this using flatmaps etc., but this will do for now
+        membershipInfos.stream().filter(MembershipInfo::hasTaskTeams).forEach(m -> {
+            m.getTaskTeams().forEach(suid -> {
+                subgroupMap.computeIfAbsent(suid, k -> new HashSet<>());
+                subgroupMap.get(suid).add(m.getUserUid());
+            });
+        });
+        logger.info("okay, wiring up task teams: {}", subgroupMap);
+        subgroupMap.forEach((suid, members) -> addMembersToSubgroup(userUid, groupUid, suid, members));
+    }
+
+    @Override
+    @Transactional
     public void copyMembersIntoGroup(String userUid, String groupUid, Set<String> memberUids) {
         User user = userRepository.findOneByUid(userUid);
         Group group = groupRepository.findOneByUid(groupUid);
@@ -351,7 +440,7 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
     @Override
     @Transactional
-    public String addMemberViaJoinPage(String groupUid, String code, String userUid, String name, String phone,
+    public String addMemberViaJoinPage(String groupUid, String code, String broadcastId, String userUid, String name, String phone,
                                        String email, Province province, List<String> topics, UserInterfaceType interfaceType) {
         Objects.requireNonNull(groupUid);
         Objects.requireNonNull(code);
@@ -360,6 +449,7 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
         }
 
         Group group = groupRepository.findOneByUid(groupUid);
+        // todo : direct between broadcast and code
         validateJoinCode(group, code); // don't record use, as already done elsewhere
 
         User joiningUser = null;
@@ -526,15 +616,22 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
                                                       boolean duringGroupCreation, boolean createWelcomeNotifications) {
         // note: User objects should only ever store phone numbers in the msisdn format (i.e, with country code at front, no '+')
 
-        Comparator<MembershipInfo> byPhoneNumber =
-                (MembershipInfo m1, MembershipInfo m2) -> (m1.getPhoneNumberWithCCode().compareTo(m2.getPhoneNumberWithCCode()));
+        Comparator<MembershipInfo> byPhoneNumber = (MembershipInfo m1, MembershipInfo m2) -> {
+            if (m1.hasPhoneNumber() && m2.hasPhoneNumber())
+                return m1.getPhoneNumberWithCCode().compareTo(m2.getPhoneNumberWithCCode());
+            else if (m1.hasValidEmail() && m2.hasValidEmail())
+                return m1.getMemberEmail().compareTo(m2.getMemberEmail());
+            else
+                return 1; // since by definition they have no basis for comparison, so point is just they're different
+        };
 
         Set<MembershipInfo> validNumberMembers = membershipInfos.stream()
                 .filter(MembershipInfo::hasValidPhoneOrEmail)
                 .collect(collectingAndThen(toCollection(() -> new TreeSet<>(byPhoneNumber)), HashSet::new));
-        logger.debug("number of members: {}", validNumberMembers.size());
+        logger.info("number of valid members in import: {}", validNumberMembers.size());
 
         Set<String> memberPhoneNumbers = validNumberMembers.stream()
+                .filter(MembershipInfo::hasValidPhoneNumber)
                 .map(MembershipInfo::getPhoneNumberWithCCode)
                 .collect(Collectors.toSet());
         Set<String> emailAddresses = validNumberMembers.stream()
@@ -557,14 +654,15 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
         Set<User> createdUsers = new HashSet<>();
         Set<Membership> memberships = new HashSet<>();
+        Set<MembershipInfo> taskTeamMembers = new HashSet<>();
 
         Set<String> existingEmails = userRepository.fetchUsedEmailAddresses();
         Set<String> existingPhoneNumbers = userRepository.fetchUserPhoneNumbers();
 
         for (MembershipInfo membershipInfo : validNumberMembers) {
             // note: splitting this instead of getOrDefault, since that method calls default method even if it finds something, hence spurious user creation
-            String msidn = membershipInfo.getPhoneNumberWithCCode();
-            String emailAddress = membershipInfo.getMemberEmail();
+            String msidn = StringUtils.isEmpty(membershipInfo.getPhoneNumberWithCCode()) ? null : membershipInfo.getPhoneNumberWithCCode();
+            String emailAddress = StringUtils.isEmpty(membershipInfo.getMemberEmail())  ? null : membershipInfo.getMemberEmail();
 
             User user = existingUserPhoneMap.containsKey(msidn) ? existingUserPhoneMap.get(msidn) :
                     existingUserEmailMap.get(emailAddress);
@@ -572,6 +670,8 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
             if (user == null) {
                 logger.debug("Adding a new user, via group creation, with phone number ... " + msidn);
                 user = new User(msidn, membershipInfo.getDisplayName(), emailAddress);
+                user.setFirstName(membershipInfo.getFirstName());
+                user.setLastName(membershipInfo.getSurname());
                 createdUsers.add(user);
             } else if (!user.isHasInitiatedSession()) {
                 if (!user.hasEmailAddress() && !StringUtils.isEmpty(emailAddress) && !existingEmails.contains(emailAddress)) {
@@ -595,6 +695,7 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
                 user.setProvince(membershipInfo.getProvince());
             }
 
+
             if (membership != null) {
                 if (membershipInfo.getTopics() != null) {
                     membership.setTopics(new HashSet<>(membershipInfo.getTopics()));
@@ -602,6 +703,11 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
                 if (membershipInfo.getAffiliations() != null) {
                     membership.addAffiliations(new HashSet<>(membershipInfo.getAffiliations()));
+                }
+
+                if (membershipInfo.hasTaskTeams()) {
+                    membershipInfo.setUserUid(user.getUid());
+                    taskTeamMembers.add(membershipInfo);
                 }
 
                 memberships.add(membership);
@@ -640,6 +746,10 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
             triggerAddMembersToParentGroup(initiator, group.getParent(), membershipInfos, joinMethod);
         }
 
+        if (!taskTeamMembers.isEmpty()) {
+            addMembersToSubgroupsAfterCommit(initiator.getUid(), group.getUid(), taskTeamMembers);
+        }
+
         return bundle;
     }
 
@@ -658,6 +768,13 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
                 logger.info("Group is on account, generate some welcome notifications, for uids: {}", addedUserUids);
                 accountGroupBroker.generateGroupWelcomeNotifications(addingUserUid, groupUid, addedUserUids);
             }
+        };
+        applicationEventPublisher.publishEvent(afterTxCommitTask);
+    }
+
+    private void addMembersToSubgroupsAfterCommit(String userUid, String parentGroupUid, Set<MembershipInfo> members) {
+        AfterTxCommitTask afterTxCommitTask = () -> {
+            applicationContext.getBean(GroupBroker.class).asyncMemberToSubgroupAdd(userUid, parentGroupUid, members);
         };
         applicationEventPublisher.publishEvent(afterTxCommitTask);
     }
@@ -722,6 +839,33 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
         Set<ActionLog> actionLogs = removeMemberships(user, group, memberships);
 
+        logActionLogsAfterCommit(actionLogs);
+    }
+
+    @Override
+    public void removeMembersFromSubgroup(String userUid, String parentUid, String childUid, Set<String> memberUids) {
+        User user = userRepository.findOneByUid(Objects.requireNonNull(userUid));
+        Group parent = groupRepository.findOneByUid(Objects.requireNonNull(parentUid));
+        Group child = groupRepository.findOneByUid(Objects.requireNonNull(childUid));
+        Objects.requireNonNull(memberUids);
+
+        if (!parent.equals(child.getParent())) {
+            throw new IllegalArgumentException("Child is not attached to supposed parent");
+        }
+
+        if (memberUids.size() > 1 || !memberUids.iterator().next().equals(userUid)) {
+            if (!permissionBroker.isGroupPermissionAvailable(user, parent, Permission.GROUP_PERMISSION_CREATE_SUBGROUP) &&
+                    !permissionBroker.isGroupPermissionAvailable(user, child, Permission.GROUP_PERMISSION_DELETE_GROUP_MEMBER)) {
+                throw new MemberLacksPermissionException(Permission.GROUP_PERMISSION_DELETE_GROUP_MEMBER);
+            }
+        }
+
+        logger.info("Removing from subgroup {}, members {}", child.getName(), memberUids);
+
+        Set<Membership> memberships = userRepository.findByUidIn(memberUids)
+                .stream().map(child::getMembership).collect(Collectors.toSet());
+
+        Set<ActionLog> actionLogs = removeMemberships(user, child, memberships);
         logActionLogsAfterCommit(actionLogs);
     }
 
@@ -809,13 +953,19 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
             detailsChanged.add("name: " + name);
         }
 
-        if (!StringUtils.isEmpty(phone)) {
-            member.setPhoneNumber(PhoneNumberUtil.convertPhoneNumber(phone));
+        if (phone != null && email != null && phone.isEmpty() && email.isEmpty()) {
+            throw new IllegalArgumentException("Cannot set both phone and email to null");
+        }
+
+        // if phone is null, assume we haven't been passed it. If it's empty, only set to blank if email is not empty
+        if (phone != null && (!phone.isEmpty() || member.hasEmailAddress() || !StringUtils.isEmpty(email))) {
+            member.setPhoneNumber(phone.trim().isEmpty() ? null : PhoneNumberUtil.convertPhoneNumber(phone));
             detailsChanged.add("phone: " + phone);
         }
 
-        if (!StringUtils.isEmpty(email)) {
-            member.setEmailAddress(email);
+        // as above, same logic for email
+        if (email != null && (!email.isEmpty() || member.hasPhoneNumber()) || !StringUtils.isEmpty(phone)) {
+            member.setEmailAddress(email.trim().isEmpty() ? null : email);
             detailsChanged.add("email: " + email);
         }
 
@@ -830,11 +980,13 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
     @Override
     @Transactional
-    public void assignMembershipTopics(String userUid, String groupUid, String memberUid, Set<String> topics) {
+    public void assignMembershipTopics(String userUid, String groupUid, String memberUid, Set<String> topics, boolean preservePrior) {
         Objects.requireNonNull(userUid);
         Objects.requireNonNull(groupUid);
         Objects.requireNonNull(memberUid);
         Objects.requireNonNull(topics);
+
+        logger.info("updating user topics to: {}", topics);
 
         User assigningUser = userRepository.findOneByUid(userUid);
         Group group = groupRepository.findOneByUid(groupUid);
@@ -850,11 +1002,67 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
         }
 
         List<String> groupTopics = group.getTopics();
-        if (topics.stream().anyMatch(s -> !groupTopics.contains(s))) {
-            throw new GroupTopicMismatchException();
+        Set<String> newGroupTopics = topics.stream().filter(topic -> !groupTopics.contains(topic)).collect(Collectors.toSet());
+        if (!newGroupTopics.isEmpty()) {
+            group.addTopics(newGroupTopics);
         }
 
-        member.setTopics(topics);
+        if (preservePrior) {
+            member.addTopics(topics);
+        } else {
+            member.setTopics(topics);
+        }
+    }
+
+    @Override
+    @Transactional
+    public void removeTopicFromMembers(String userUid, String groupUid, Collection<String> topics, Set<String> memberUids) {
+        Objects.requireNonNull(userUid);
+        Objects.requireNonNull(groupUid);
+        Objects.requireNonNull(topics);
+        Objects.requireNonNull(memberUids);
+
+        User alteringUser = userRepository.findOneByUid(userUid);
+        Group group = groupRepository.findOneByUid(groupUid);
+
+        permissionBroker.validateGroupPermission(alteringUser, group, Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS);
+
+        List<User> users = userRepository.findByUidIn(memberUids);
+        List<Membership> members = membershipRepository.findByGroupAndUserIn(group, users);
+
+        members.forEach(m -> m.removeTopics(topics));
+    }
+
+    @Override
+    @Transactional
+    public void alterMemberTopicsTeamsOrgs(String userUid, String groupUid, String memberUid, Set<String> affiliations, Set<String> taskTeams, Set<String> topics) {
+        Group group = groupRepository.findOneByUid(Objects.requireNonNull(groupUid));
+        User user = userRepository.findOneByUid(Objects.requireNonNull(userUid));
+        User member = userRepository.findOneByUid(Objects.requireNonNull(memberUid));
+
+        Objects.requireNonNull(affiliations);
+        Objects.requireNonNull(taskTeams);
+        Objects.requireNonNull(topics);
+
+        if (!user.equals(member)) {
+            permissionBroker.validateGroupPermission(user, group, Permission.GROUP_PERMISSION_UPDATE_GROUP_DETAILS);
+        }
+
+        Membership membership = group.getMembership(member);
+        membership.setAffiliations(affiliations);
+        membership.setTopics(topics);
+
+        Set<String> currentTeams = membershipRepository.findAll(MembershipSpecifications.memberTaskTeams(group, member))
+                .stream().map(m -> m.getGroup().getUid()).collect(Collectors.toSet());
+
+        logger.info("user current teams: {}, passed teams: {}", currentTeams, taskTeams);
+        if (!currentTeams.equals(taskTeams)) {
+            // this is not very efficient, but we expect this very rarely, so prioritizing readability and simplicity
+            currentTeams.stream().filter(s -> !taskTeams.contains(s))
+                    .forEach(s -> removeMembersFromSubgroup(userUid, group.getUid(), s, Collections.singleton(memberUid)));
+            taskTeams.stream().filter(s -> !currentTeams.contains(s))
+                    .forEach(s -> addMembersToSubgroup(userUid, group.getUid(), s, Collections.singleton(memberUid)));
+        }
     }
 
     @Override
@@ -1147,11 +1355,16 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
 
     @Override
     @Transactional
-    public Group loadAndRecordUse(String groupUid, String code) {
+    public Group loadAndRecordUse(String groupUid, String code, String broadcastId) {
         Group group = load(groupUid);
-        validateJoinCode(group, code);
-        recordJoinCodeInbound(group, code);
-        // in fugure may add some sophistication here, e.g., deciding what to send back, etc
+        logger.info("code =? {}, and b id = {}", code, broadcastId);
+        if (!StringUtils.isEmpty(code)) {
+            validateJoinCode(group, code);
+            recordJoinCodeInbound(group, code);
+        }
+        if (!StringUtils.isEmpty(broadcastId)) {
+            logger.info("we had an inbound on broadcast ID! record it");
+        }
         return group;
     }
 
@@ -1161,7 +1374,6 @@ public class GroupBrokerImpl implements GroupBroker, ApplicationContextAware {
     public void updateGroupDefaultReminderSetting(String userUid, String groupUid, int reminderMinutes) {
         Objects.requireNonNull(userUid);
         Objects.requireNonNull(groupUid);
-        Objects.requireNonNull(reminderMinutes);
 
         Group group = load(groupUid);
         User user = userRepository.findOneByUid(userUid);

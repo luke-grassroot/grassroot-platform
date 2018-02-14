@@ -10,6 +10,7 @@ import za.org.grassroot.core.enums.UserInterfaceType;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -49,11 +50,19 @@ public interface GroupBroker {
     void addMembers(String userUid, String groupUid, Set<MembershipInfo> membershipInfos,
                     GroupJoinMethod joinMethod, boolean adminUserCalling);
 
+    void addMembersToSubgroup(String userUid, String groupUid, String subGroupUid, Set<String> memberUids);
+
+    void deactivateSubGroup(String userUid, String parentUid, String subGroupUid);
+
+    void renameSubGroup(String userUid, String parentUid, String subGroupUid, String newName);
+
+    void asyncMemberToSubgroupAdd(String userUid, String groupUid, Set<MembershipInfo> membershipInfos);
+
     void copyMembersIntoGroup(String userUid, String groupUid, Set<String> memberUids);
 
     void addMemberViaJoinCode(String userUidToAdd, String groupUid, String tokenPassed, UserInterfaceType interfaceType);
 
-    String addMemberViaJoinPage(String groupUid, String code, String userUid, String name, String phone, String email,
+    String addMemberViaJoinPage(String groupUid, String code, String broadcastId, String userUid, String name, String phone, String email,
                                 Province province, List<String> topics, UserInterfaceType interfaceType);
 
     void notifyOrganizersOfJoinCodeUse(Instant periodStart, Instant periodEnd);
@@ -62,8 +71,9 @@ public interface GroupBroker {
                              GroupJoinMethod joinMethod, String joinMethodDescriptor,
                              boolean duringGroupCreation, boolean createWelcomeNotifications);
 
-
     void removeMembers(String userUid, String groupUid, Set<String> memberUids);
+
+    void removeMembersFromSubgroup(String userUid, String parentUid, String childUid, Set<String> memberUids);
 
     void unsubscribeMember(String userUid, String groupUid);
 
@@ -73,7 +83,11 @@ public interface GroupBroker {
                                  Province province);
 
     // note: only accepts topics that are from the group itself
-    void assignMembershipTopics(String userUid, String groupUid, String memberUid, Set<String> topics);
+    void assignMembershipTopics(String userUid, String groupUid, String memberUid, Set<String> topics, boolean preservePrior);
+
+    void removeTopicFromMembers(String userUid, String groupUid, Collection<String> topic, Set<String> memberUids);
+
+    void alterMemberTopicsTeamsOrgs(String userUid, String groupUid, String memberUid, Set<String> affiliations, Set<String> taskTeams, Set<String> topics);
 
     @Transactional
     boolean setGroupPinnedForUser(String userUid, String groupUid, boolean pinned);
@@ -98,7 +112,7 @@ public interface GroupBroker {
 
     /** METHODS FOR DEALING WITH JOIN TOKENS, PUBLIC SETTINGS, AND SEARCHING **/
 
-    Group loadAndRecordUse(String groupUid, String code);
+    Group loadAndRecordUse(String groupUid, String code, String broadcastId);
 
     String openJoinToken(String userUid, String groupUid, LocalDateTime expiryDateTime);
 
